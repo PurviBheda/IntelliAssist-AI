@@ -1,0 +1,7 @@
+IntelliAssist AI — Smart Document AI Assistant
+
+IntelliAssist AI helps users understand their documents.
+It extracts document text and prepares it for semantic search.
+
+The application will eventually use retrieval-augmented
+generation to answer questions based on document content.
