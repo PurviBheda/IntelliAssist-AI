@@ -1,0 +1,10 @@
+{
+  "description": "An AI-powered document chatbot offering intuitive workspace navigation and smart assistance to streamline document management and enhance productivity.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
