@@ -184,10 +184,10 @@ Traditional keyword search (e.g. lexical matching or grep) only matches literal 
 
 Semantic search with embeddings solves this: queries and document chunks are mapped into the same semantic space, allowing the system to retrieve passages by **conceptual intent** rather than strict keyword identity.
 
-### 10.7 Why FAISS is the Next Step (Not Implemented Today)
+### 10.7 Vector Indexing with FAISS
 While embeddings convert chunks into numerical vectors, calculating similarity scores across thousands of vectors using linear scans becomes slow as documents accumulate.
 
-**FAISS (Facebook AI Similarity Search)** is a specialized library optimized for lightning-fast similarity search and clustering of dense vectors. FAISS is scheduled for implementation in Day 6. Today's scope focuses strictly on reliable chunking, lazy model initialization, vector dimension consistency, and associating chunk metadata with vectors.
+**FAISS (Facebook AI Similarity Search)** provides an optimized C++ implementation with Python bindings for lightning-fast similarity search and clustering of dense vectors. IntelliAssist AI integrates an in-memory `FAISSVectorStore` based on `faiss.IndexFlatIP` (see Section 13 below).
 
 ### 10.8 Local Operation & Zero API Key Requirements
 The embedding service is built strictly on local open-source components (`sentence-transformers` and `PyTorch` CPU). It does **not** make calls to OpenAI, Cohere, Google, or any paid API endpoint. No API keys or external billing are required.
@@ -199,6 +199,7 @@ The embedding service is built strictly on local open-source components (`senten
 In `backend/requirements.txt`:
 - `sentence-transformers>=3.0.0`: Modern sentence embedding pipeline with optimized CPU encoding.
 - `numpy>=1.26.0`: Fast vector manipulation and array conversions for downstream FAISS indexing.
+- `faiss-cpu>=1.8.0`: High-performance similarity search library compiled for local CPU execution.
 
 ### 10.10 Python Usage Example
 
@@ -253,7 +254,7 @@ for item in embedded_chunks:
 
 ## 11. Running Automated Tests
 
-Run the full automated test suite (including document processor, text chunker, and embedding service):
+Run the full automated test suite (74 tests covering document processing, chunking, embeddings, and vector indexing):
 
 ```powershell
 python -m pytest tests/ -v
@@ -267,12 +268,15 @@ python -m pytest tests/test_document_processor.py -v
 # Text chunking and boundary split tests (16 tests)
 python -m pytest tests/test_text_chunker.py -v
 
-# Text embedding service tests with mock models (12 tests)
+# Text embedding service tests with mock models (13 tests)
 python -m pytest tests/test_embedding_service.py -v
+
+# FAISS vector store indexing and retrieval tests (26 tests)
+python -m pytest tests/test_vector_store.py -v
 ```
 
 > [!TIP]
-> The automated unit tests use deterministic mock models. They run in under 3 seconds and require **no internet connection** and **no model downloads**.
+> The automated unit tests use deterministic mock models and synthetic vectors. They run in under 3 seconds (aside from the initial PyTorch import) and require **no internet connection** and **no model downloads**.
 
 ---
 
@@ -290,4 +294,136 @@ This manual test will:
 3. Generate real 384-dimensional dense vectors.
 4. Verify L2 unit normalization (~1.0).
 5. Compute and print the cosine similarity between chunks.
+
+---
+
+## 13. FAISS Vector Store
+
+### 13.1 What a Vector Database / Index Does
+Traditional relational databases and search engines index text using keyword lookups or inverted indexes. In contrast, a **vector index** stores high-dimensional numerical vectors (embeddings) produced by neural networks and indexes them geometrically. 
+
+When a user submits a query, the query is converted into an embedding in the same vector space. The vector store computes geometric distances between the query vector and stored document vectors, retrieving the passages that are conceptually closest in meaning, even if they share zero keywords.
+
+### 13.2 Why IntelliAssist AI Uses FAISS
+**FAISS (Facebook AI Similarity Search)** is the industry-standard library for efficient similarity search and clustering of dense vectors.
+- **Extreme Speed**: Written in highly optimized C++ with AVX/SSE vector instructions and multi-threaded CPU execution.
+- **100% Local & Self-Contained**: Operates entirely in process memory on the host machine without requiring external cloud databases (e.g. Pinecone, Qdrant Cloud), Docker containers, or network latency.
+- **Low Memory Overhead**: Direct flat arrays with negligible indexing overhead for thousands of chunks.
+
+### 13.3 What IndexFlatIP Means
+`faiss.IndexFlatIP` stands for **Index Flat Inner Product**:
+- **Flat**: Exact, brute-force search without lossy quantization or compression. Every query is compared against all vectors in the index, guaranteeing **100% recall** (exact nearest neighbors) without approximations.
+- **IP (Inner Product)**: The distance metric computed between query vector $q$ and stored vector $v$ is the dot product:
+  $$\text{IP}(q, v) = \sum_{i=1}^{d} q_i \cdot v_i$$
+
+### 13.4 Why Normalized Embeddings Equal Cosine Similarity
+Cosine similarity measures the angle between two non-zero vectors in multi-dimensional space:
+$$\text{Cosine Similarity}(q, v) = \frac{q \cdot v}{\|q\|_2 \cdot \|v\|_2}$$
+
+When both vectors are **L2-normalized** such that their Euclidean lengths are exactly 1 ($\|q\|_2 = 1$ and $\|v\|_2 = 1$):
+$$\text{Cosine Similarity}(q, v) = \frac{q \cdot v}{1 \cdot 1} = q \cdot v = \text{Inner Product}(q, v)$$
+
+By enforcing unit L2 normalization on all vectors, `IndexFlatIP` directly computes **exact cosine similarity** scores in the range $[-1.0, 1.0]$. The store validates vector norms and normalizes them automatically by default (`normalize_vectors=True`), or verifies unit length under strict mode (`normalize_vectors=False`).
+
+> [!NOTE]
+> Similarity scores represent cosine similarity, **not probabilities**. A score of `1.0` denotes identical semantic orientation, `0.0` denotes orthogonality (unrelated concepts), and negative values denote opposing semantic directions.
+
+### 13.5 What top_k Means
+The `top_k` parameter specifies the maximum number of most-similar document chunks to return. For example, `top_k=5` retrieves the 5 vectors with the highest similarity scores.
+- If the index contains fewer vectors than `top_k`, the store safely returns only the available records without padding or errors.
+- Any FAISS internal `-1` sentinel markers (indicating unfilled neighbor slots) are safely filtered out before returning results.
+- `top_k` must be a positive integer ($k \ge 1$).
+
+### 13.6 How Chunk IDs and Page Metadata are Preserved
+FAISS internally assigns sequential integer row indices (`0, 1, 2, ...`) to indexed vectors. To prevent loss of document context, `FAISSVectorStore` maintains an explicit parallel record mapping:
+1. Position `i` in FAISS directly corresponds to index `i` in `self._records`.
+2. Each record stores:
+   - **`chunk_id`**: Deterministic unique identifier (e.g. `"handbook.pdf_page_1_chunk_1"`).
+   - **`text`**: Complete text excerpt for that chunk.
+   - **`metadata`**: Source attribution including `filename`, `file_type`, `page_number`, and `chunk_index`.
+3. In addition, `self._chunk_ids` maintains an active set of stored chunk IDs to reject duplicates in $O(1)$ time and guarantee that every chunk ID is globally unique within the index.
+
+### 13.7 How Multiple Documents Share an Index
+A single `FAISSVectorStore` instance can hold chunks from dozens of different uploaded documents:
+- Chunk IDs incorporate the filename and page index (`f"{filename}_page_{page_number}_chunk_{chunk_index}"`), preventing namespace collisions.
+- Search queries retrieve chunks ranked strictly by semantic relevance, regardless of which document they originated from.
+- Returned metadata preserves the source document name and exact page number, enabling precise citations and multi-document synthesis.
+
+### 13.8 Installing Dependencies
+Ensure the virtual environment is activated, then install `faiss-cpu`:
+
+```powershell
+python -m pip install faiss-cpu>=1.8.0
+```
+
+### 13.9 Running the Vector Store Tests
+Run the 26 automated unit tests for `FAISSVectorStore`:
+
+```powershell
+python -m pytest tests/test_vector_store.py -v
+```
+
+These tests verify empty index safety, single and multi-chunk additions, vector counts, nearest-neighbor accuracy, descending ranking, multi-document retrieval, top_k boundary cases, invalid input rejection, duplicate ID rejection, NaN/Inf rejection, index clearing, and atomic batch insertions.
+
+### 13.10 Running the Vector Store Smoke Test
+Run the standalone deterministic smoke test:
+
+```powershell
+python smoke_test_vector_store.py
+```
+
+This smoke test:
+1. Initializes `FAISSVectorStore(dimension=384)`.
+2. Indexes sample chunks from `handbook.pdf` and `security_policy.docx`.
+3. Queries with a synthetic vector matching the security policy.
+4. Prints the ranked chunk IDs, similarity scores, source filenames, and page numbers.
+5. Verifies that the best-matching chunk is ranked #1.
+6. Tests index clearing and safe empty-index searching.
+
+### 13.11 Current Limitations
+1. **In-Memory Storage Only**: The FAISS index and metadata mappings live purely in process memory (`RAM`). All indexed vectors and metadata reset when the Python process terminates. Disk serialization (e.g. `faiss.write_index`) is scheduled for future milestones.
+2. **Batch Re-indexing**: Because this uses flat in-memory indexing, removing a single chunk without rebuilding the index is not supported; use `store.clear()` to flush the entire store.
+3. **Scope Boundary**: Full RAG retrieval pipelines, LLM answer synthesis, and chatbot API endpoints belong to subsequent milestone days.
+
+### 13.12 Complete End-to-End Python Example
+
+```python
+from pathlib import Path
+from app.document_processor import process_document
+from app.text_chunker import chunk_document
+from app.embedding_service import EmbeddingService
+from app.vector_store import FAISSVectorStore
+
+# 1. Process documents (PDF, TXT, DOCX)
+doc_a = process_document(Path("sample.pdf"))
+
+# 2. Split into overlapping chunks
+chunks_a = chunk_document(doc_a, chunk_size=800, chunk_overlap=150)
+print(f"Generated {len(chunks_a)} chunks from {doc_a['filename']}.")
+
+# 3. Generate dense 384-dimensional embeddings
+embedder = EmbeddingService()
+embedded_chunks = embedder.embed_chunks(chunks_a)
+
+# 4. Initialize FAISS vector store and insert chunks
+store = FAISSVectorStore(dimension=384, normalize_vectors=True)
+added = store.add_chunks(embedded_chunks)
+print(f"Added {added} chunks to FAISS index. Total vectors: {store.total_vectors}")
+
+# 5. Embed a user search query
+query_text = "What are the security guidelines and policies?"
+query_vec = embedder.embed_text(query_text)
+
+# 6. Retrieve top-k most relevant chunks
+results = store.search(query_vec, top_k=3)
+
+print("\n--- Search Results ---")
+for rank, res in enumerate(results, start=1):
+    print(f"\nRank #{rank}:")
+    print(f"  Chunk ID:         {res['chunk_id']}")
+    print(f"  Cosine Sim Score: {res['similarity_score']:.4f}")
+    print(f"  Source File:      {res['metadata']['filename']}")
+    print(f"  Page Number:      {res['metadata']['page_number']}")
+    print(f"  Excerpt:          {res['text'][:150]}...")
+```
 

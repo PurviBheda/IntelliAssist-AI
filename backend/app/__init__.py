@@ -8,6 +8,11 @@ from .embedding_service import (
     embed_text,
     embed_texts,
 )
+from .vector_store import (
+    DEFAULT_EMBEDDING_DIMENSION,
+    FAISSVectorStore,
+    create_vector_store,
+)
 
 __all__ = [
     "process_document",
@@ -17,4 +22,7 @@ __all__ = [
     "embed_chunks",
     "embed_text",
     "embed_texts",
+    "DEFAULT_EMBEDDING_DIMENSION",
+    "FAISSVectorStore",
+    "create_vector_store",
 ]
