@@ -1,0 +1,110 @@
+[
+  {
+    "query_id": "SEC-01",
+    "question": "What are the rules for creating employee passwords and how long must they be?",
+    "expected_doc": "security_policy.txt",
+    "expected_chunk_ids": ["security_policy.txt_page_1_chunk_1"],
+    "expected_passage_text": "minimum of 14 characters in length",
+    "fact_description": "Employee passwords must be at least 14 characters long and combine uppercase, lowercase, numbers, and special symbols.",
+    "query_type": "direct_factual"
+  },
+  {
+    "query_id": "SEC-02",
+    "question": "Are workers permitted to get two-factor authentication codes sent via SMS text message?",
+    "expected_doc": "security_policy.txt",
+    "expected_chunk_ids": ["security_policy.txt_page_1_chunk_2"],
+    "expected_passage_text": "SMS-based text message verification and voice call verification are explicitly prohibited",
+    "fact_description": "SMS and voice verification are explicitly prohibited for MFA due to SIM-swapping risks.",
+    "query_type": "synonym_paraphrase"
+  },
+  {
+    "query_id": "SEC-03",
+    "question": "How many invalid login attempts trigger an account lockout and what is the suspension duration?",
+    "expected_doc": "security_policy.txt",
+    "expected_chunk_ids": ["security_policy.txt_page_1_chunk_2"],
+    "expected_passage_text": "5 consecutive incorrect password attempts",
+    "fact_description": "Accounts automatically lock out after 5 consecutive incorrect attempts for a 30-minute duration.",
+    "query_type": "paraphrased"
+  },
+  {
+    "query_id": "SEC-04",
+    "question": "How frequently are role-based access permissions audited and evaluated by the security team?",
+    "expected_doc": "security_policy.txt",
+    "expected_chunk_ids": ["security_policy.txt_page_1_chunk_3"],
+    "expected_passage_text": "reviewed quarterly by department managers and audited annually",
+    "fact_description": "Role-based access permissions are reviewed quarterly by managers and audited annually by Infosec.",
+    "query_type": "differing_wording"
+  },
+  {
+    "query_id": "HB-01",
+    "question": "How many annual vacation days and sick days do full-time employees receive?",
+    "expected_doc": "employee_handbook.txt",
+    "expected_chunk_ids": ["employee_handbook.txt_page_1_chunk_1"],
+    "expected_passage_text": "20 days of paid time off",
+    "fact_description": "Full-time employees receive 20 days of paid time off (PTO) and 10 paid sick days per calendar year.",
+    "query_type": "synonym_paraphrase"
+  },
+  {
+    "query_id": "HB-02",
+    "question": "What are the standard operational hours and the mandatory core collaboration window?",
+    "expected_doc": "employee_handbook.txt",
+    "expected_chunk_ids": ["employee_handbook.txt_page_1_chunk_2"],
+    "expected_passage_text": "core collaboration hours from 10:00 AM to 3:00 PM",
+    "fact_description": "Standard hours are 9:00 AM to 5:00 PM, with mandatory core collaboration hours from 10:00 AM to 3:00 PM.",
+    "query_type": "direct_factual"
+  },
+  {
+    "query_id": "HB-03",
+    "question": "Does the company provide financial assistance or a stipend to purchase home office equipment?",
+    "expected_doc": "employee_handbook.txt",
+    "expected_chunk_ids": ["employee_handbook.txt_page_1_chunk_3"],
+    "expected_passage_text": "one-time equipment reimbursement stipend of $500",
+    "fact_description": "The company provides a one-time $500 stipend for approved home office supplies like ergonomic chairs and monitors.",
+    "query_type": "paraphrased"
+  },
+  {
+    "query_id": "HB-04",
+    "question": "How much advance notice is required if an employee is unexpectedly absent or running late?",
+    "expected_doc": "employee_handbook.txt",
+    "expected_chunk_ids": ["employee_handbook.txt_page_1_chunk_4"],
+    "expected_passage_text": "at least 30 minutes prior to their scheduled start time",
+    "fact_description": "Employees must notify their manager and team via Slack or email at least 30 minutes before scheduled start time.",
+    "query_type": "differing_wording"
+  },
+  {
+    "query_id": "EXP-01",
+    "question": "What is the daily per diem cap on meal expenses during company travel?",
+    "expected_doc": "expense_policy.txt",
+    "expected_chunk_ids": ["expense_policy.txt_page_1_chunk_2"],
+    "expected_passage_text": "daily meal reimbursement allowance (per diem) is capped at a maximum of $75",
+    "fact_description": "The daily meal reimbursement allowance during business travel is capped at $75 per day.",
+    "query_type": "direct_factual"
+  },
+  {
+    "query_id": "EXP-02",
+    "question": "At what purchase amount is a detailed itemized receipt strictly required for reimbursement?",
+    "expected_doc": "expense_policy.txt",
+    "expected_chunk_ids": ["expense_policy.txt_page_1_chunk_2"],
+    "expected_passage_text": "Itemized receipts are mandatory for all business expenditure claims exceeding $25",
+    "fact_description": "Itemized receipts are mandatory for all expense claims exceeding $25.",
+    "query_type": "synonym_paraphrase"
+  },
+  {
+    "query_id": "EXP-03",
+    "question": "Who must authorize reimbursement claims totaling between $1,001 and $5,000?",
+    "expected_doc": "expense_policy.txt",
+    "expected_chunk_ids": ["expense_policy.txt_page_1_chunk_3"],
+    "expected_passage_text": "Department Directors or Vice Presidents (VPs) must approve expense claims between $1,001 and $5,000",
+    "fact_description": "Claims between $1,001 and $5,000 must be approved by Department Directors or Vice Presidents.",
+    "query_type": "paraphrased"
+  },
+  {
+    "query_id": "EXP-04",
+    "question": "Within how many calendar days must an employee file their business expense report?",
+    "expected_doc": "expense_policy.txt",
+    "expected_chunk_ids": ["expense_policy.txt_page_1_chunk_4"],
+    "expected_passage_text": "within 30 calendar days from the date the business expense occurred",
+    "fact_description": "Expense reports must be submitted within 30 calendar days from the date the expense occurred.",
+    "query_type": "differing_wording"
+  }
+]

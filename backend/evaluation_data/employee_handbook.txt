@@ -1,0 +1,11 @@
+SECTION 1: ANNUAL LEAVE AND SICK TIME POLICY
+Full-time employees receive 20 days of paid time off (PTO) per calendar year, accrued monthly. Employees also receive 10 paid sick days per year for personal illness or family care. A medical certificate from a licensed physician is required for sick leave exceeding 3 consecutive business days. Employees may roll over a maximum of 5 unused PTO days into the following calendar year, which must be utilized before March 31. Vacation requests longer than 3 consecutive working days require at least 2 weeks of advance written notice to the direct supervisor.
+
+SECTION 2: STANDARD WORKING HOURS AND CORE COLLABORATION WINDOW
+The standard full-time work week consists of 40 hours scheduled Monday through Friday. Standard office operational hours are 9:00 AM to 5:00 PM local time. To ensure effective cross-functional teamwork, all staff members must remain available and responsive during mandatory core collaboration hours from 10:00 AM to 3:00 PM. Flexible scheduling arrangements, including adjusted start and departure times, may be authorized with written manager approval.
+
+SECTION 3: REMOTE AND HYBRID WORK GUIDELINES
+Employees in designated eligible roles are permitted to work remotely up to 3 days per calendar week under our hybrid work model. Remote team members must maintain a dedicated private workspace with a secure high-speed broadband internet connection of at least 50 Mbps download speed. The company provides a one-time equipment reimbursement stipend of $500 for approved home office supplies such as ergonomic chairs and external monitors. All remote work must be conducted within the employee's country of employment.
+
+SECTION 4: ATTENDANCE TRACKING AND UNPLANNED ABSENCES
+All employees are required to record their daily working hours in the automated HR portal by the end of each shift. In the event of an unanticipated delay or illness, employees must notify their direct manager and team via Slack or email at least 30 minutes prior to their scheduled start time. Unexcused absence spanning 3 consecutive business days without communication constitutes job abandonment and results in immediate termination of employment.

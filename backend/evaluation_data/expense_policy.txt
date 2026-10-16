@@ -1,0 +1,15 @@
+SECTION 1: BUSINESS EXPENSE REIMBURSEMENT ELIGIBILITY
+The company reimburses employees for reasonable and necessary expenses incurred directly while conducting official company business. Reimbursable categories include business travel airfare, standard lodging, ground transportation, client meals, and pre-approved professional training courses. Non-reimbursable expenses include personal entertainment, alcoholic beverages without client attendance, traffic or parking citations, and airline seat upgrade fees. The daily meal reimbursement allowance (per diem) is capped at a maximum of $75 per day during business travel.
+
+SECTION 2: RECEIPT REQUIREMENTS AND DOCUMENTATION
+Itemized receipts are mandatory for all business expenditure claims exceeding $25. Generic credit card authorization slips or bank statements are not acceptable documentation on their own; employees must supply detailed merchant receipts specifying each purchased item, purchase date, and vendor details. If a required itemized receipt is lost or damaged, an official Lost Receipt Affidavit signed by the department director must accompany the reimbursement claim.
+
+SECTION 3: APPROVAL THRESHOLDS AND AUTHORIZATION TIERS
+Expense reimbursement reports are subject to multi-tiered managerial approval thresholds:
+- Direct Managers are authorized to approve expense claims up to $1,000.
+- Department Directors or Vice Presidents (VPs) must approve expense claims between $1,001 and $5,000.
+- The Chief Financial Officer (CFO) must provide final written sign-off for any expense claim or single item exceeding $5,000.
+Submitting separate claims to bypass approval thresholds is strictly forbidden.
+
+SECTION 4: SUBMISSION TIMELINES AND PAYMENT PROCESSING
+All employee expense reports must be submitted through the finance management software within 30 calendar days from the date the business expense occurred. Expense reports submitted after 60 calendar days will be rejected and deemed non-reimbursable unless granted an explicit formal exception by the CFO. Approved claims are processed by Accounts Payable and disbursed via direct deposit alongside regular bi-weekly payroll.

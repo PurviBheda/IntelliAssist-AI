@@ -1,0 +1,11 @@
+SECTION 1: PASSWORD REQUIREMENTS AND COMPLEXITY
+All employee passwords must be a minimum of 14 characters in length. Passwords must contain a combination of at least one uppercase letter, one lowercase letter, one numerical digit, and one special symbol (!@#$%^&*). Passwords automatically expire every 90 days, and employees cannot reuse any of their previous 10 passwords. Sharing passwords or writing them down is strictly forbidden.
+
+SECTION 2: MULTI-FACTOR AUTHENTICATION (MFA)
+Multi-factor authentication (MFA) is mandatory for accessing all enterprise systems, email accounts, VPNs, and internal cloud services. Permitted MFA methods include physical FIDO2 hardware keys (such as YubiKey) and certified mobile authenticator applications (Google Authenticator and Microsoft Authenticator). SMS-based text message verification and voice call verification are explicitly prohibited due to SIM-swapping vulnerabilities.
+
+SECTION 3: ACCOUNT LOCKOUT AND RECOVERY
+A user account will automatically lock out after 5 consecutive incorrect password attempts within a 15-minute timeframe. When an account is locked, it remains disabled for a mandatory period of 30 minutes. To unlock an account immediately, the user must contact the IT Service Desk, provide their employee badge ID, and complete an identity verification challenge.
+
+SECTION 4: ACCESS CONTROL AND PRINCIPLE OF LEAST PRIVILEGE
+Access rights to corporate systems and sensitive databases follow the principle of least privilege. Employees are granted only the minimum permissions required to perform their assigned job duties. Role-based access control (RBAC) permissions are reviewed quarterly by department managers and audited annually by the Information Security team.

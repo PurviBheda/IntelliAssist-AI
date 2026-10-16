@@ -254,7 +254,7 @@ for item in embedded_chunks:
 
 ## 11. Running Automated Tests
 
-Run the full automated test suite (74 tests covering document processing, chunking, embeddings, and vector indexing):
+Run the full automated test suite (89 tests covering document processing, chunking, embeddings, vector indexing, and retrieval evaluation):
 
 ```powershell
 python -m pytest tests/ -v
@@ -273,6 +273,9 @@ python -m pytest tests/test_embedding_service.py -v
 
 # FAISS vector store indexing and retrieval tests (26 tests)
 python -m pytest tests/test_vector_store.py -v
+
+# Retrieval evaluation metrics and harness tests (15 tests)
+python -m pytest tests/test_retrieval_evaluator.py -v
 ```
 
 > [!TIP]
@@ -426,4 +429,117 @@ for rank, res in enumerate(results, start=1):
     print(f"  Page Number:      {res['metadata']['page_number']}")
     print(f"  Excerpt:          {res['text'][:150]}...")
 ```
+
+---
+
+## 14. Retrieval Testing and Quality Evaluation
+
+### 14.1 Purpose of Retrieval Evaluation
+In a Retrieval-Augmented Generation (RAG) system, downstream answer accuracy is strictly bounded by retrieval quality: if the vector store fails to retrieve the correct passage containing the answer fact, an LLM cannot synthesize an accurate response.
+
+Retrieval evaluation benchmarks whether the existing local embedding service (`sentence-transformers/all-MiniLM-L6-v2`) and FAISS vector store (`IndexFlatIP`) consistently rank the ground-truth document chunks within the top retrieval results for natural-language questions.
+
+### 14.2 Evaluation Corpus Structure
+The evaluation system uses a realistic, self-contained multi-document corpus located in `backend/evaluation_data/`:
+
+| Document Filename | Format | Key Subject Matter | Character Count | Chunks |
+| :--- | :--- | :--- | :--- | :--- |
+| `security_policy.txt` | TXT | Password requirements, MFA policies, account lockout, access control / RBAC | ~1,732 chars | 3 chunks |
+| `employee_handbook.txt` | TXT | Paid time off (PTO), sick leave, working hours, core hours, remote work, attendance | ~2,194 chars | 4 chunks |
+| `expense_policy.txt` | TXT | Reimbursable expenses, meal per diem, itemized receipt limits, approval tiers, deadlines | ~2,151 chars | 4 chunks |
+
+Total corpus size: 3 documents, 11 indexed chunks.
+
+A standardized dataset of 12 natural-language questions is maintained in `backend/evaluation_data/evaluation_queries.json`. The dataset balances:
+- **Direct factual questions** (e.g., specific dollar limits or character requirements)
+- **Paraphrased questions** (e.g., asking about "two-factor authentication" rather than "MFA")
+- **Questions using synonyms** (e.g., "vacation days" for "PTO", "stipend" for "equipment reimbursement")
+- **Questions with differing grammatical structures** from the source documents
+- **Balanced document coverage** (4 queries per document)
+
+### 14.3 Definition of Ground-Truth Relevance
+A retrieved chunk is deemed **relevant** to an evaluation query if and only if:
+1. **Document Match**: The retrieved chunk's metadata filename exactly matches the query's `expected_doc`.
+2. **Passage Match**: Either:
+   - The chunk's `chunk_id` is within the query's list of `expected_chunk_ids`, OR
+   - The chunk's text contains the query's `expected_passage_text` (case-insensitive substring match).
+
+Irrelevant chunks or chunks from other documents are strictly non-relevant, ensuring evaluation integrity without false positives.
+
+### 14.4 Retrieval Quality Metrics and Mathematical Formulas
+
+Evaluation calculates standard Information Retrieval (IR) metrics evaluated at cutoffs $K \in \{1, 3, 5\}$:
+
+#### A. Hit Rate@K (Success Rate)
+The proportion of evaluation queries for which at least one relevant chunk appears within the top $K$ retrieved results:
+
+$$\text{Hit}_i@K = \begin{cases} 1 & \text{if } \left| \text{Retrieved}_i[:K] \cap \text{Relevant}_i \right| \ge 1 \\ 0 & \text{otherwise} \end{cases}$$
+
+$$\text{Hit Rate}@K = \frac{1}{N} \sum_{i=1}^{N} \text{Hit}_i@K$$
+
+#### B. Recall@K
+For each query, the fraction of all known relevant chunks that are retrieved in the top $K$ results:
+
+$$\text{Recall}_i@K = \frac{\left| \text{Retrieved}_i[:K] \cap \text{Relevant}_i \right|}{\left| \text{Relevant}_i \right|}$$
+
+$$\text{Recall}@K = \frac{1}{N} \sum_{i=1}^{N} \text{Recall}_i@K$$
+
+> [!NOTE]
+> **Single-Relevant Chunk Equivalence**: When an evaluation query has exactly one known relevant chunk ($|\text{Relevant}_i| = 1$), $\text{Recall}_i@K$ and $\text{Hit}_i@K$ are mathematically identical (both yield $1.0$ if the chunk is retrieved in top $K$, and $0.0$ otherwise).
+
+#### C. Mean Reciprocal Rank (MRR)
+Measures the position of the first relevant chunk in the ranked search results:
+
+$$\text{RR}_i = \begin{cases} \frac{1}{\text{rank}_i} & \text{if a relevant chunk appears in retrieved results at 1-based rank } \text{rank}_i \\ 0 & \text{if no relevant chunk is retrieved} \end{cases}$$
+
+$$\text{MRR} = \frac{1}{N} \sum_{i=1}^{N} \text{RR}_i$$
+
+- If the first relevant result is at Rank 1, $\text{RR} = 1.0$.
+- If at Rank 2, $\text{RR} = 0.5$.
+- If at Rank 3, $\text{RR} = 0.3333$.
+- If not found in the evaluated candidates, $\text{RR} = 0.0$.
+
+### 14.5 Exact PowerShell Commands to Run
+
+Activate your virtual environment and run the commands from the `backend/` directory:
+
+```powershell
+cd "d:\IntelliAssist AI\backend"
+.\.venv\Scripts\Activate.ps1
+```
+
+#### Run All 89 Automated Unit Tests:
+```powershell
+python -m pytest -v
+```
+
+#### Run the Retrieval Evaluator Unit Tests (15 tests, fast mock mode):
+```powershell
+python -m pytest tests/test_retrieval_evaluator.py -v
+```
+
+#### Run the Real End-to-End Semantic Retrieval Evaluation:
+```powershell
+python evaluate_retrieval.py
+```
+
+### 14.6 How to Interpret the Output
+Running `python evaluate_retrieval.py` outputs:
+1. **Corpus Ingestion Summary**: Document names, character counts, and total chunks indexed.
+2. **Per-Query Log**: Shows the question, expected document, ground-truth fact, first relevant rank, Hit@K, Recall@K, and top 3 retrieved chunks with cosine similarity scores and relevance markers (`[RELEVANT]` / `[NON-RELEVANT]`).
+3. **Aggregate Metric Table**: Hit Rate@1, Hit Rate@3, Hit Rate@5, Recall@1, Recall@3, Recall@5, and MRR.
+4. **Exported Reports**:
+   - `backend/evaluation_results/retrieval_evaluation_report.json`: Full machine-readable evaluation report with per-query retrieved chunks and configuration metadata.
+   - `backend/evaluation_results/retrieval_evaluation_report.csv`: Tabular spreadsheet format for query-level analysis.
+
+### 14.7 Automated Unit Tests vs. Actual Semantic Evaluation
+It is vital to distinguish between unit tests and the evaluation script:
+- **Automated Unit Tests (`tests/test_retrieval_evaluator.py`)**: Use deterministic mock embeddings and synthetic vector responses. They test code correctness, mathematical formula accuracy, ranking logic, boundary cases (empty lists, invalid K), and error handling in under 1 second without internet access or GPU/CPU model loading.
+- **Semantic Evaluation Script (`evaluate_retrieval.py`)**: Uses the **actual** `sentence-transformers/all-MiniLM-L6-v2` neural network and real **FAISS IndexFlatIP** index to measure real-world semantic retrieval quality on genuine text passages.
+
+### 14.8 Known Limitations of Small Synthetic Evaluation Corpora
+1. **Corpus Scale**: This synthetic evaluation corpus contains 3 documents and 11 chunks. High Hit Rates on an 11-chunk index do not guarantee identical accuracy on a corpus of 100,000 documents where distractor paragraphs and lexical collisions are far more prevalent.
+2. **Semantic Distractors**: In question `HB-03` ("Does the company provide financial assistance or a stipend to purchase home office equipment?"), generic terms like "financial assistance" and "reimbursement" caused expense policy chunks to rank slightly higher than the employee handbook stipend chunk (ranking the true chunk at Rank 3 rather than Rank 1).
+3. **Synthetic Queries**: Real end-user queries often contain typos, ambiguous intent, multi-hop reasoning requirements, or cross-document dependencies not fully captured by synthetic test queries.
+4. **Scope Boundary**: This evaluation measures **retrieval only**. Full RAG generation, answer faithfulness, and LLM hallucination benchmarking are scheduled for subsequent milestone days.
 
