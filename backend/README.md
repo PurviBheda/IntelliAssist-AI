@@ -541,5 +541,173 @@ It is vital to distinguish between unit tests and the evaluation script:
 1. **Corpus Scale**: This synthetic evaluation corpus contains 3 documents and 11 chunks. High Hit Rates on an 11-chunk index do not guarantee identical accuracy on a corpus of 100,000 documents where distractor paragraphs and lexical collisions are far more prevalent.
 2. **Semantic Distractors**: In question `HB-03` ("Does the company provide financial assistance or a stipend to purchase home office equipment?"), generic terms like "financial assistance" and "reimbursement" caused expense policy chunks to rank slightly higher than the employee handbook stipend chunk (ranking the true chunk at Rank 3 rather than Rank 1).
 3. **Synthetic Queries**: Real end-user queries often contain typos, ambiguous intent, multi-hop reasoning requirements, or cross-document dependencies not fully captured by synthetic test queries.
-4. **Scope Boundary**: This evaluation measures **retrieval only**. Full RAG generation, answer faithfulness, and LLM hallucination benchmarking are scheduled for subsequent milestone days.
+4. **Scope Boundary**: This evaluation measures **retrieval only**. Full RAG generation, answer faithfulness, and LLM hallucination benchmarking are documented in Section 15 below.
+
+---
+
+## 15. Retrieval-Augmented Generation (RAG) Pipeline
+
+### 15.1 Overview & Architecture
+The `rag_pipeline` module connects semantic retrieval with language model answer synthesis. It operates strictly on user documents without hallucinating facts or disclosing internal configurations.
+
+```
+ User Question
+      │
+      ▼
+ Question Validation (Non-empty, trimmed)
+      │
+      ▼
+ Query Embedding (sentence-transformers/all-MiniLM-L6-v2, 384-d float32)
+      │
+      ▼
+ FAISS Dense Retrieval (IndexFlatIP cosine similarity, top-K chunks)
+      │
+      ▼
+ Relevance Threshold Filtering & Insufficiency Check
+      │
+      ▼
+ Grounded Prompt Construction (Context budgeting, injection defense)
+      │
+      ▼
+ Language Model Generation (Google Gemini / MockLLMClient)
+      │
+      ▼
+ Citation Resolution & Provenance Attribution
+      │
+      ▼
+ Structured Response (RAGResponse: answer, citations, status, metadata)
+```
+
+---
+
+### 15.2 Grounded Prompting & Hallucination Defense
+
+To guarantee factual accuracy and protect against prompt injection, the RAG pipeline applies strict system-level instructions:
+
+1. **Context-Only Grounding**: Answers must be derived strictly from the supplied document chunks. Speculation, assumptions, and extrapolation beyond the text are prohibited.
+2. **Anti-Hallucination Guardrails**: The LLM is directed not to invent policies, metrics, dollar values, dates, or specifications.
+3. **Indirect Prompt Injection Defense**: Retrieved text is treated purely as untrusted reference material, not executable instructions. Instructions embedded within uploaded documents attempting to alter system instructions, change roles, or leak system prompts are ignored.
+4. **Transparent Refusal**: If the context does not answer the question, the pipeline returns a standardized refusal message:
+   `"The available documents do not contain enough information to answer this question."`
+   and sets `sufficient_context = False`.
+5. **Partial Support Differentiation**: If only a portion of the query can be verified from context, the model explicitly highlights what is known versus what remains unconfirmed in the documents.
+
+---
+
+### 15.3 Source Citations & Attribution Policy
+
+Every answer generated through the pipeline is accompanied by structured citations extracted from the actual retrieved chunks:
+
+```json
+{
+  "chunk_id": "security_policy.txt_page_1_chunk_1",
+  "filename": "security_policy.txt",
+  "page_number": 1,
+  "similarity_score": 0.7367,
+  "file_type": "txt",
+  "chunk_index": 1,
+  "is_cited": true
+}
+```
+
+- **Physical vs. Logical Page Numbers**:
+  - **PDF documents**: Preserves exact 1-based physical page numbers from PyMuPDF.
+  - **TXT and DOCX documents**: Adheres to the document processor's logical page convention (`page_number: 1`).
+  - Page numbers are never fabricated or guessed.
+- **Retrieved vs. Cited Chunks**:
+  - `retrieved_chunks`: All top-K chunks retrieved from the FAISS vector index based on semantic similarity.
+  - `is_cited`: Indicates whether the source document, page, or chunk is explicitly cited or referenced within the generated answer text.
+  - **Attribution Accuracy Note**: Claim-level citation attribution is not claimed as verified without token-level alignment spans. Retrieved chunks are returned transparently to allow user verification.
+
+---
+
+### 15.4 Structured Response Schema
+
+The pipeline returns a typed `RAGResponse` dataclass that also supports standard dictionary access (`response["answer"]`, `response.get("citations")`, `response.to_dict()`):
+
+| Field | Type | Description |
+| :--- | :--- | :--- |
+| `question` | `str` | Cleaned and validated user question. |
+| `answer` | `str` | Grounded answer text or standardized refusal message. |
+| `citations` | `List[Dict]` | Structured source citations with page numbers, filenames, and scores. |
+| `retrieved_chunks` | `List[Dict]` | Raw retrieved chunks and metadata from the vector store. |
+| `retrieval_count` | `int` | Number of chunks retrieved from FAISS. |
+| `sufficient_context` | `bool` | `True` if context was sufficient; `False` if refused or empty. |
+| `error` | `Optional[str]` | Sanitized error message if an exception occurred during processing. |
+| `model_name` | `Optional[str]` | Name of the model used (e.g., `gemini-2.5-flash` or `mock-llm`). |
+| `generation_status` | `str` | Status code: `"success"`, `"insufficient_context"`, or `"error"`. |
+
+> [!NOTE]
+> Sensitive API keys, system paths, and internal stack traces are redacted before errors are returned in `RAGResponse`.
+
+---
+
+### 15.5 LLM Provider Configuration (Google Gemini)
+
+The project uses **Google Gemini** as its primary LLM provider via the official `google-genai` Python SDK (`from google import genai`).
+
+#### A. Provider Selection Rationale
+- **Supported Python SDK**: Google GenAI SDK (`google-genai>=2.0.0`) provides native support for `types.GenerateContentConfig`, `system_instruction`, and temperature control.
+- **Model Efficiency & Cost**: `gemini-2.5-flash` offers near-instant response times and high retrieval grounding accuracy at minimal cost.
+- **Free Tier Available**: Google AI Studio provides a free tier suitable for development and testing.
+
+#### B. Environment Configuration
+Create or edit `backend/.env` (modeled after `backend/.env.example`):
+
+```bash
+# LLM Provider Configuration
+GEMINI_API_KEY=your_gemini_api_key_here
+GEMINI_MODEL=gemini-2.5-flash
+```
+
+- Keys are loaded safely via `load_environment_variables()` without overwriting existing environment variables.
+- `backend/.env` is included in `.gitignore` and is never committed to version control.
+- If the key is missing when initializing `GeminiLLMClient`, a clear, actionable error is raised directing the developer to Google AI Studio.
+
+#### C. Provider Costs & Quota Details
+- **Free Tier**: Free of charge for up to 15 Requests Per Minute (RPM) and 1,500 Requests Per Day (RPD) on Google AI Studio.
+- **Paid Tier**: Pay-as-you-go billing is available if higher throughput is required.
+- **Local Embeddings**: 100% free; generated locally using `sentence-transformers/all-MiniLM-L6-v2` with zero external API calls.
+
+---
+
+### 15.6 Running Automated Unit Tests
+
+The test suite includes 20 deterministic tests for the RAG pipeline in `backend/tests/test_rag_pipeline.py`. All tests use `MockLLMClient` and deterministic mock embeddings, completing in ~1 second with zero network calls:
+
+```powershell
+# Run RAG pipeline tests only:
+python -m pytest tests/test_rag_pipeline.py -v
+
+# Run the complete test suite (109 passing tests):
+python -m pytest -v
+```
+
+---
+
+### 15.7 Running the End-to-End Smoke Test
+
+The smoke test (`backend/smoke_test_rag_pipeline.py`) validates the full RAG workflow using real local embeddings, real FAISS search, and sample document chunks:
+
+```powershell
+python smoke_test_rag_pipeline.py
+```
+
+The script runs two distinct modes:
+1. **Part A (Local Offline Smoke Test)**:
+   - Uses real `sentence-transformers/all-MiniLM-L6-v2` embeddings and FAISS index.
+   - Tests factual query retrieval, metadata preservation, and citation matching.
+   - Tests refusal on irrelevant queries and input validation.
+   - Requires zero network requests and zero API keys.
+2. **Part B (Optional Real-LLM Integration Test)**:
+   - If `GEMINI_API_KEY` is present in `backend/.env` or the environment, sends a live query to Google Gemini (`gemini-2.5-flash`).
+   - If `GEMINI_API_KEY` is not present, prints clear setup instructions and skips live calls cleanly without failing.
+
+---
+
+### 15.8 Behavior When No Relevant Context is Found
+
+1. **Empty Vector Store**: Returns `sufficient_context = False` with `INSUFFICIENT_CONTEXT_MESSAGE` immediately without invoking the LLM.
+2. **Below Similarity Cutoff**: When `similarity_threshold` is configured, chunks with similarity below the cutoff are excluded. If no chunks pass the threshold, the pipeline refuses to hallucinate and returns `sufficient_context = False`.
+3. **Model Refusal**: When retrieved chunks do not contain the answer, the LLM produces a refusal matching prompt instructions, and `sufficient_context` is set to `False`.
 

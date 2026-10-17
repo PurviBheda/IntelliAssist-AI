@@ -23,6 +23,18 @@ from .retrieval_evaluator import (
     compute_reciprocal_rank,
     load_queries_from_json,
 )
+from .rag_pipeline import (
+    BaseLLMClient,
+    Citation,
+    GeminiLLMClient,
+    MockLLMClient,
+    RAGPipeline,
+    RAGResponse,
+    answer_question,
+    build_citations,
+    build_rag_prompt,
+    validate_question,
+)
 
 __all__ = [
     "process_document",
@@ -43,4 +55,14 @@ __all__ = [
     "compute_recall_at_k",
     "compute_reciprocal_rank",
     "load_queries_from_json",
+    "BaseLLMClient",
+    "Citation",
+    "GeminiLLMClient",
+    "MockLLMClient",
+    "RAGPipeline",
+    "RAGResponse",
+    "answer_question",
+    "build_citations",
+    "build_rag_prompt",
+    "validate_question",
 ]
