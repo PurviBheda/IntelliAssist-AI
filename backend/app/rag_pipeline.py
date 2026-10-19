@@ -345,16 +345,19 @@ def build_rag_prompt(
     question: str,
     retrieved_chunks: List[Dict[str, Any]],
     max_context_chars: int = DEFAULT_MAX_CONTEXT_CHARS,
+    conversation_history: Optional[List[Dict[str, Any]]] = None,
 ) -> Tuple[str, List[Dict[str, Any]]]:
-    """Construct a grounded prompt combining the user question and retrieved context chunks.
+    """Construct a grounded prompt combining the user question, optional conversation history, and retrieved context chunks.
 
     Enforces maximum context character length by truncating lower-ranking chunks
-    to avoid exceeding context boundaries.
+    to avoid exceeding context boundaries. Retains strict separation between
+    retrieved document context and conversation history.
 
     Args:
         question: Validated user question.
         retrieved_chunks: Ranked chunks retrieved from vector store.
         max_context_chars: Maximum allowable character length for context.
+        conversation_history: Optional list of recent message dicts ({'role': ..., 'content': ...}).
 
     Returns:
         Tuple of (formatted prompt string, list of chunks included in prompt).
@@ -389,17 +392,48 @@ def build_rag_prompt(
 
     formatted_context = "\n\n---\n\n".join(context_blocks)
 
+    history_section = ""
+    instruction_text = (
+        "Answer the question using ONLY the context information above. "
+        "Cite the source document filename and page number for factual statements. "
+        "If the information is not present in the context, explicitly state: "
+        f"'{INSUFFICIENT_CONTEXT_MESSAGE}'."
+    )
+
+    if conversation_history:
+        history_lines: List[str] = []
+        for msg in conversation_history:
+            role_raw = msg.get("role", "user")
+            role_label = "User" if role_raw == "user" else "Assistant"
+            content = (msg.get("content") or "").strip()
+            if content:
+                history_lines.append(f"{role_label}: {content}")
+        if history_lines:
+            history_text = "\n".join(history_lines)
+            history_section = (
+                f"\n\nPRIOR CONVERSATION HISTORY:\n"
+                f"---------------------\n"
+                f"{history_text}\n"
+                f"---------------------"
+            )
+            instruction_text = (
+                "Answer the question using the context information above. "
+                "The prior conversation history is provided solely for context on follow-up questions. "
+                "Base all factual claims and citations strictly on the retrieved document context. "
+                "Cite the source document filename and page number for factual statements. "
+                "If the information is not present in the context, explicitly state: "
+                f"'{INSUFFICIENT_CONTEXT_MESSAGE}'."
+            )
+
     prompt = (
         f"CONTEXT INFORMATION:\n"
         f"---------------------\n"
         f"{formatted_context}\n"
-        f"---------------------\n\n"
+        f"---------------------"
+        f"{history_section}\n\n"
         f"QUESTION:\n{question}\n\n"
         f"INSTRUCTION:\n"
-        f"Answer the question using ONLY the context information above. "
-        f"Cite the source document filename and page number for factual statements. "
-        f"If the information is not present in the context, explicitly state: "
-        f"'{INSUFFICIENT_CONTEXT_MESSAGE}'."
+        f"{instruction_text}"
     )
 
     return prompt, included_chunks
@@ -543,6 +577,7 @@ class RAGPipeline:
         question: str,
         top_k: Optional[int] = None,
         similarity_threshold: Optional[float] = None,
+        conversation_history: Optional[List[Dict[str, Any]]] = None,
     ) -> RAGResponse:
         """Execute the end-to-end RAG pipeline for a given user question.
 
@@ -550,6 +585,7 @@ class RAGPipeline:
             question: User's question string.
             top_k: Optional per-call override for top_k chunks.
             similarity_threshold: Optional per-call override for similarity score cutoff.
+            conversation_history: Optional list of recent conversation message dicts.
 
         Returns:
             RAGResponse object containing answer, citations, retrieved chunks,
@@ -645,11 +681,12 @@ class RAGPipeline:
                 generation_status="insufficient_context",
             )
 
-        # 7. Construct grounded prompt with retrieved chunks only
+        # 7. Construct grounded prompt with retrieved chunks and optional history
         prompt, chunks_in_prompt = build_rag_prompt(
             question=cleaned_question,
             retrieved_chunks=retrieved_chunks,
             max_context_chars=self.max_context_chars,
+            conversation_history=conversation_history,
         )
 
         # 8. Obtain LLM client
@@ -720,6 +757,7 @@ def answer_question(
     similarity_threshold: Optional[float] = None,
     max_context_chars: int = DEFAULT_MAX_CONTEXT_CHARS,
     system_instruction: str = DEFAULT_SYSTEM_INSTRUCTION,
+    conversation_history: Optional[List[Dict[str, Any]]] = None,
 ) -> RAGResponse:
     """Convenience functional interface to answer a user question using the RAG pipeline.
 
@@ -732,6 +770,7 @@ def answer_question(
         similarity_threshold: Optional minimum cosine similarity cutoff.
         max_context_chars: Maximum character budget for prompt context.
         system_instruction: Guiding prompt rules for answer generation.
+        conversation_history: Optional list of recent conversation message dicts.
 
     Returns:
         Structured RAGResponse object (also supports dictionary-style key access).
@@ -745,4 +784,5 @@ def answer_question(
         max_context_chars=max_context_chars,
         system_instruction=system_instruction,
     )
-    return pipeline.answer(question)
+    return pipeline.answer(question, conversation_history=conversation_history)
+

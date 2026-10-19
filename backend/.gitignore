@@ -26,3 +26,8 @@ htmlcov/
 
 # Evaluation Results
 evaluation_results/
+
+# SQLite databases
+*.db
+*.sqlite
+*.sqlite3

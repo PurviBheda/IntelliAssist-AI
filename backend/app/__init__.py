@@ -35,6 +35,19 @@ from .rag_pipeline import (
     build_rag_prompt,
     validate_question,
 )
+from .conversation_store import (
+    ConversationRecord,
+    ConversationStore,
+    MessageRecord,
+    generate_conversation_title,
+    get_default_db_path,
+    utcnow_iso,
+)
+from .chatbot_service import (
+    ChatResponse,
+    ChatbotService,
+    create_chatbot_service,
+)
 
 __all__ = [
     "process_document",
@@ -65,4 +78,14 @@ __all__ = [
     "build_citations",
     "build_rag_prompt",
     "validate_question",
+    "ConversationRecord",
+    "ConversationStore",
+    "MessageRecord",
+    "generate_conversation_title",
+    "get_default_db_path",
+    "utcnow_iso",
+    "ChatResponse",
+    "ChatbotService",
+    "create_chatbot_service",
 ]
+

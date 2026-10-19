@@ -679,7 +679,7 @@ The test suite includes 20 deterministic tests for the RAG pipeline in `backend/
 # Run RAG pipeline tests only:
 python -m pytest tests/test_rag_pipeline.py -v
 
-# Run the complete test suite (109 passing tests):
+# Run the complete test suite (148 passing tests):
 python -m pytest -v
 ```
 
@@ -710,4 +710,191 @@ The script runs two distinct modes:
 1. **Empty Vector Store**: Returns `sufficient_context = False` with `INSUFFICIENT_CONTEXT_MESSAGE` immediately without invoking the LLM.
 2. **Below Similarity Cutoff**: When `similarity_threshold` is configured, chunks with similarity below the cutoff are excluded. If no chunks pass the threshold, the pipeline refuses to hallucinate and returns `sufficient_context = False`.
 3. **Model Refusal**: When retrieved chunks do not contain the answer, the LLM produces a refusal matching prompt instructions, and `sufficient_context` is set to `False`.
+
+---
+
+## 16. Chatbot Service & Persistent Conversation Store Module
+
+### 16.1 Overview & Responsibilities
+The Chatbot Service (`backend/app/chatbot_service.py`) and Conversation Store (`backend/app/conversation_store.py`) provide multi-turn conversation memory and contextual document intelligence for **IntelliAssist AI**:
+
+- **`backend/app/conversation_store.py`**: A robust, thread-safe SQLite-backed storage layer for managing conversation threads and messages with foreign key constraints, cascading deletions, chronological retrieval, and automatic non-LLM title generation.
+- **`backend/app/chatbot_service.py`**: Orchestrates chat requests, validates user messages, retrieves conversation history, invokes the existing RAG pipeline with grounded context, preserves citations, handles safe refusals on insufficient context, and records assistant turns.
+
+```
+                    Chat Request (conversation_id, message)
+                                    │
+                                    ▼
+                     [1] Message Validation (Non-empty)
+                                    │
+                                    ▼
+                     [2] Check Conversation Exists
+                                    │
+                                    ▼
+       [3] Load Recent History (Limited to max_history_messages)
+                                    │
+                                    ▼
+                     [4] Persist User Message to SQLite
+                                    │
+                                    ▼
+   [5] Invoke RAG Pipeline (Document Retrieval + Separate History Prompt)
+                                    │
+                                    ▼
+                   RAG Success / Insufficient Context?
+                      ├── YES ──► [6] Persist Assistant Response & Citations
+                      └── ERROR ─► [7] Do NOT Persist Failed Answer; Return Error
+                                    │
+                                    ▼
+                    [8] Return Structured ChatResponse
+```
+
+---
+
+### 16.2 SQLite Conversation Storage Schema
+
+The conversation database uses SQLite with Write-Ahead Logging (WAL) and foreign keys enabled:
+
+```sql
+CREATE TABLE IF NOT EXISTS conversations (
+    conversation_id TEXT PRIMARY KEY,
+    title           TEXT NOT NULL,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS messages (
+    message_id      TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    role            TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+    content         TEXT NOT NULL,
+    created_at      TEXT NOT NULL,
+    citations       TEXT,  -- JSON serialized list of structured citation objects
+    metadata        TEXT,  -- JSON serialized metadata (model_name, status, etc.)
+    FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_messages_conversation_created
+    ON messages(conversation_id, created_at ASC);
+
+CREATE INDEX IF NOT EXISTS idx_conversations_updated
+    ON conversations(updated_at DESC);
+```
+
+#### Key Design Highlights:
+- **Foreign Key Enforcement**: `PRAGMA foreign_keys = ON;` is strictly applied on every SQLite connection.
+- **Cascading Deletes**: Deleting a conversation atomically deletes all related messages from the `messages` table.
+- **WAL Mode & Busy Timeout**: Configured with `PRAGMA journal_mode = WAL;` and `PRAGMA busy_timeout = 5000;` for concurrent read/write durability.
+- **Consistent UTC Timestamps**: Timestamps are stored in ISO 8601 UTC format (`YYYY-MM-DDTHH:MM:SS.ffffff+00:00`).
+- **Parameterized Queries**: All database queries use parameterized SQL (`?` placeholders) to eliminate SQL injection risks.
+
+---
+
+### 16.3 Database Location & Configuration
+
+- **Default Location**: `backend/data/chat_history.db`
+- **Configurability**: Pass a custom file path or `":memory:"` directly to `ConversationStore(db_path=...)`.
+- **Git Ignore Protection**: SQLite database files (`*.db`, `*.sqlite`, `*.sqlite3`) are excluded in `.gitignore` and `backend/.gitignore` to prevent committing local data.
+
+---
+
+### 16.4 How Conversation History is Used
+
+1. **Pre-Fetch Before Saving**: Recent messages are fetched *prior* to persisting the current user turn. This prevents the current message from being duplicated in the prompt history.
+2. **Configurable History Window**: A configurable limit (`max_history_messages`, default: 6) ensures prompts do not exceed token budgets or dilute retrieval relevance.
+3. **Strict Context Separation**: The prompt maintains clear boundaries between retrieved reference material and dialogue turns:
+   - `CONTEXT INFORMATION:` Contains document chunks with filenames and page numbers.
+   - `PRIOR CONVERSATION HISTORY:` Contains prior user and assistant turns for conversational context.
+   - `INSTRUCTION:` Explicitly instructs the LLM that document context is the sole source of factual truth, and prior turns are reference for follow-up questions only.
+4. **Thread Boundary Isolation**: All queries and history lookups are scoped by `conversation_id`, guaranteeing zero cross-talk between conversations.
+
+---
+
+### 16.5 Safe Title Generation
+
+Conversation titles are generated without calling an LLM:
+- Derived automatically on the first user message when the conversation has the default title `"New Conversation"`.
+- Cleaned of excessive whitespace, sanitized, and truncated at word boundaries to 45 characters with an ellipsis (`...`).
+- Preserves explicit custom titles set by users or applications.
+
+---
+
+### 16.6 Error Handling & Provider Failures
+
+- **Failed Turns are NOT Persisted**: If the RAG pipeline or LLM encounters an exception (e.g. quota limits, network timeout), the assistant failure is *not* recorded as a valid message in SQLite. This ensures subsequent turns are not corrupted by previous error messages.
+- **Secret Redaction**: API keys and authorization tokens are redacted from all exceptions, error messages, and logs.
+- **Accurate Model Reporting**: `ChatResponse.is_live_llm` is `True` only when a live cloud LLM (e.g. Google Gemini) executed successfully. Offline mock responses are always reported with `is_live_llm = False`.
+
+---
+
+### 16.7 Running Automated Unit Tests
+
+The test suite includes 39 new automated tests covering the conversation store and chatbot service:
+- `backend/tests/test_conversation_store.py`: 24 tests (schema creation, CRUD, ordering, cascade delete, isolation, PRAGMA checks).
+- `backend/tests/test_chatbot_service.py`: 15 tests (chat workflow, history incorporation, limits, citations, refusal, error handling).
+
+```powershell
+# Run conversation store tests:
+python -m pytest tests/test_conversation_store.py -v
+
+# Run chatbot service tests:
+python -m pytest tests/test_chatbot_service.py -v
+
+# Run the complete test suite (148 tests):
+python -m pytest -v
+```
+
+All unit tests run 100% offline using mock embeddings and deterministic mock LLM clients with zero network requests.
+
+---
+
+### 16.8 Running the End-to-End Chatbot Smoke Test
+
+The smoke test (`backend/smoke_test_chatbot.py`) validates the full multi-turn conversational workflow:
+
+```powershell
+python smoke_test_chatbot.py
+```
+
+The smoke test validates:
+1. **Isolated SQLite DB Initialization**: Creates and verifies temporary database with foreign keys and WAL mode.
+2. **Corpus Ingestion & FAISS Indexing**: Embeds and indexes sample policies in FAISS.
+3. **Multi-Turn Chatbot Workflow**:
+   - Turn 1: Validates initial grounded question answering and citation attribution.
+   - Turn 2: Validates follow-up question answering with conversational context.
+4. **Conversation Isolation**: Creates a second conversation and verifies zero cross-talk.
+5. **Conversation Listing**: Verifies sorting by `updated_at` descending.
+6. **Safe Refusal**: Confirms unanswerable queries return standard safe refusal with zero fabricated citations.
+7. **Cascading Deletion**: Verifies deleting a conversation purges all associated messages.
+8. **Optional Live Gemini Test**: Executes live generation only if `GEMINI_API_KEY` is present in the environment or `backend/.env`.
+
+---
+
+### 16.9 Configuring the LLM API Key Safely
+
+To enable live answer generation using Google Gemini:
+
+1. Obtain a free API key from [Google AI Studio](https://aistudio.google.com/).
+2. Copy `backend/.env.example` to `backend/.env`:
+   ```bash
+   cp backend/.env.example backend/.env
+   ```
+3. Set your API key in `backend/.env`:
+   ```bash
+   GEMINI_API_KEY=your_actual_key_here
+   GEMINI_MODEL=gemini-2.5-flash
+   ```
+4. Or set it in your Windows PowerShell session:
+   ```powershell
+   $env:GEMINI_API_KEY = "your_actual_key_here"
+   ```
+
+> **Security Note**: `backend/.env` is included in `.gitignore` and must never be committed to git. The application never logs or stores raw API keys in SQLite databases or error logs.
+
+---
+
+### 16.10 Current Limitations
+- **Local SQLite Concurrency**: Designed for single-server or desktop deployments. High concurrent multi-process writes are managed via WAL mode and busy timeouts, but distributed multi-instance clusters would require PostgreSQL.
+- **Context Windowing**: Follow-up queries rely on recent message injection rather than a standalone LLM-based query-rewriting step.
+- **In-Memory FAISS Index**: Document embeddings reside in-memory; persisting the vector index across restarts requires saving the FAISS index file.
+
 
