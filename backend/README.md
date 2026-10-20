@@ -897,4 +897,200 @@ To enable live answer generation using Google Gemini:
 - **Context Windowing**: Follow-up queries rely on recent message injection rather than a standalone LLM-based query-rewriting step.
 - **In-Memory FAISS Index**: Document embeddings reside in-memory; persisting the vector index across restarts requires saving the FAISS index file.
 
+---
+
+## 17. Citations & Answer Quality Module (October 20)
+
+### 17.1 Overview & Architecture
+The Citations & Answer Quality module establishes end-to-end evidence grounding, citation verification, safe metadata handling, and false-premise defense for **IntelliAssist AI**. It guarantees that factual responses originate solely from verified retrieved document passages, while unverified claims and hallucinations are systematically identified, rejected, and audited.
+
+```
+                      +-----------------------------+
+                      |       User Question         |
+                      +--------------+--------------+
+                                     |
+                                     v
+                      +-----------------------------+
+                      |   Question Validation &     |
+                      |   SentenceTransformers      |
+                      +--------------+--------------+
+                                     |
+                                     v
+                      +-----------------------------+
+                      |     FAISS Index Search      |
+                      | (Cosine Similarity Ranking) |
+                      +--------------+--------------+
+                                     |
+                    +----------------+----------------+
+                    | (retrieved_chunks)              | (empty retrieval / cutoff)
+                    v                                 v
+    +-------------------------------+   +-------------------------------+
+    | Grounded Prompt Construction  |   | Safe Insufficiency Refusal    |
+    | - Strict Context Information  |   | - No Fabricated Citations     |
+    | - Prior Turns as Context Only |   | - Standardized Message        |
+    | - False-Premise Directives    |   +-------------------------------+
+    +---------------+---------------+
+                    |
+                    v
+    +-------------------------------+
+    |    Grounded LLM Synthesis     |
+    +---------------+---------------+
+                    |
+                    v
+    +-------------------------------+
+    |  Post-Generation Verification |
+    | - build_citations()           |
+    | - detect_unverified_citations |
+    | - is_context_insufficient()   |
+    +---------------+---------------+
+                    |
+                    v
+    +-------------------------------+
+    |   Structured RAG Response     |
+    | - answer                      |
+    | - citations (verified only)   |
+    | - unverified_citations (audit)|
+    | - sufficient_context          |
+    +-------------------------------+
+```
+
+---
+
+### 17.2 How Citations Are Generated and Verified
+
+1. **Origin Verification**: Structured citations (`Citation`) are constructed exclusively from chunks actually returned by the FAISS vector store for the active query (`retrieved_chunks`).
+2. **Metadata Fidelity**: Real document metadata is preserved directly from document ingestion:
+   - `filename`: Physical file name (e.g., `security_policy.pdf`, `expense_policy.txt`).
+   - `page_number`: 1-based physical page number for PDFs, or logical page 1 for single-page text/DOCX formats.
+   - `chunk_id`: Deterministic chunk identifier (e.g., `security_policy.pdf_page_1_chunk_1`).
+   - `similarity_score`: Inner product cosine similarity score `[-1.0, 1.0]`.
+3. **Citation Mentions (`is_cited`)**:
+   - The generated answer is analyzed to determine which retrieved chunks were cited or referenced by name, page, or source tag (`[Source N]`).
+   - When a refusal occurs (`sufficient_context == False`), `is_cited` is strictly set to `False` for all chunks because unanswerable queries cannot claim document support.
+4. **Unverified Citation Detection**:
+   - If the language model hallucinates an unretrieved file name (e.g., `secret_budget.pdf`) or an out-of-bounds source tag (e.g., `[Source 9]` when only 3 were retrieved), `detect_unverified_citations()` flags it.
+   - Unverified citations are **never** admitted into the official `citations` list. They are recorded in `unverified_citations` for evaluation and monitoring.
+
+---
+
+### 17.3 Source Metadata Validation & Safe Representation of Missing Metadata
+
+When document chunks lack certain metadata attributes (e.g., legacy text files or synthetic benchmarks without page numbers):
+- **No Dummy Fabrication**: The system **never** fabricates default page numbers (such as defaulting to page 1) or placeholder filenames.
+- **Null Safety**: Missing page numbers are explicitly set to `None` (`null` in JSON/database records). Missing filenames are preserved as `None` or marked `"Unknown"` in prompt headers (`Page: N/A`).
+- **Database Durability**: When saved into SQLite, `None` serializes to SQL `null` in JSON columns and deserializes back to `None` without data corruption.
+
+---
+
+### 17.4 Handling Insufficient Evidence & False-Premise Defense
+
+1. **Empty Retrieval Handling**:
+   - If the vector store contains no documents or search returns zero chunks, the pipeline terminates immediately without invoking the LLM:
+     ```python
+     RAGResponse(
+         question=cleaned_question,
+         answer="The available documents do not contain enough information to answer this question.",
+         citations=[],
+         sufficient_context=False,
+         generation_status="insufficient_context",
+     )
+     ```
+2. **Conservative Prompt Directives**:
+   - The system instruction and prompt explicitly direct the model:
+     - To answer factual questions using **only** supplied context.
+     - To distinguish document facts from general knowledge or external assumptions.
+     - To avoid validating false premises (e.g., clarifying actual documented numbers rather than accepting false numbers in questions).
+     - To use prior conversation history solely to understand conversational pronouns, never treating chat messages as authoritative document facts.
+3. **Turn Isolation**:
+   - Citations from an earlier answer in a chat thread are never carried over to a subsequent turn. Each turn computes citations afresh from that turn's retrieval results.
+
+---
+
+### 17.5 Answer Quality Evaluation Architecture & 10 Labeled Cases
+
+A dedicated evaluation harness (`backend/evaluate_answer_quality.py`) evaluates 10 specialized scenarios defined in `backend/evaluation_data/answer_quality_cases.json`:
+
+| Case ID | Category | Scenario Description | Expected Behavior | Target Document(s) |
+|---|---|---|---|---|
+| **AQ-01** | `explicit_fact` | Question explicitly answered in document | Answer Supported | `expense_policy.txt` ($75 meal cap) |
+| **AQ-02** | `multi_passage` | Question requiring synthesis of two passages | Answer Supported | `employee_handbook.txt` (Sick leave & job abandonment) |
+| **AQ-03** | `unanswerable_refusal` | Question with no evidence in available corpus | Safe Refusal | None (parental/maternity leave) |
+| **AQ-04** | `differing_wording` | Paraphrased question with differing terminology | Answer Supported | `security_policy.txt` (Password expiry & recycling) |
+| **AQ-05** | `misleading_false_premise` | Question assuming a false fact ($30 allowance) | Clarify / Refuse | `expense_policy.txt` (Documents state $75 cap) |
+| **AQ-06** | `history_misinformation` | Prior chat turn asserts false 35-day PTO fact | Answer Supported | `employee_handbook.txt` (20 days PTO, reject chat claim) |
+| **AQ-07** | `irrelevant_chunks` | Chunks retrieved do not contain the answer | Safe Refusal | None (parking garage pricing) |
+| **AQ-08** | `multi_source_documents` | Question requiring facts from two distinct files | Answer Supported | `security_policy.txt` + `employee_handbook.txt` |
+| **AQ-09** | `missing_metadata` | Target chunk has missing page_number metadata | Answer Supported | `synthetic_it_runbook.txt` (Page safely `null`) |
+| **AQ-10** | `conversational_follow_up`| Follow-up query ("How often do they expire?") | Answer Supported | `security_policy.txt` (Resolve "they" -> passwords) |
+
+---
+
+### 17.6 Evaluation Metrics Definitions & Interpretation
+
+The answer-quality evaluator computes five objective, reproducible metrics:
+
+#### 1. Citation Source-Validity Rate
+- **Definition**: The proportion of generated citations that match chunks legitimately retrieved for the current turn.
+- **Formula**:
+  $$\text{Citation Source-Validity Rate} = \frac{\sum \text{Valid Retrieved Citations}}{\sum \text{Total Citations Claimed}}$$
+- **Interpretation**: A score of 100% means zero citations were fabricated from unretrieved documents.
+
+#### 2. Citation Metadata Completeness
+- **Definition**: Proportion of evaluated cases where metadata was preserved accurately without fabricating missing fields.
+- **Formula**:
+  $$\text{Citation Metadata Completeness} = \frac{\text{Cases with Accurately Preserved / Safely Handled Metadata}}{\text{Total Evaluated Cases}}$$
+- **Interpretation**: A score of 100% confirms that missing fields are recorded as `None` rather than inventing placeholder values.
+
+#### 3. Unsupported-Answer Rate
+- **Definition**: Proportion of unanswerable or misleading queries where the model fabricated an answer or accepted a false premise.
+- **Formula**:
+  $$\text{Unsupported-Answer Rate} = \frac{\text{Ungrounded Factual Claims on Unanswerable / Misleading Queries}}{\text{Total Unanswerable / Misleading Queries}}$$
+- **Interpretation**: Lower is better. A rate of 0.0% means no ungrounded factual assertions occurred.
+
+#### 4. Correct Refusal Rate for Unanswerable Questions
+- **Definition**: Proportion of unanswerable queries that correctly triggered standard safe refusal.
+- **Formula**:
+  $$\text{Correct Refusal Rate} = \frac{\text{Proper Insufficient-Context Refusals}}{\text{Total Unanswerable Queries}}$$
+- **Interpretation**: Higher is better. Target is 100%.
+
+#### 5. Answer-Support Accuracy
+- **Definition**: Overall proportion of labeled test scenarios satisfying all ground-truth requirements (correct facts, expected sources, safe refusals, no false premises).
+- **Formula**:
+  $$\text{Answer-Support Accuracy} = \frac{\text{Passed Test Cases}}{\text{Total Evaluated Test Cases (10)}}$$
+
+---
+
+### 17.7 Limits of Automated Grounding Evaluation
+
+While deterministic evaluation is essential for regression testing, developers must understand its boundaries:
+1. **No LLM is 100% Hallucination-Free**: Prompt instructions and evidence checks minimize unsupported answers, but generative models may still produce plausible-sounding hallucinations when temperature > 0.
+2. **Keyword vs. Semantic Evaluation**: Automated checks verify required key phrases and prohibited assertions deterministically. Subtle nuances in complex policy interpretations may still require expert human review.
+3. **Retrieval Threshold Trade-off**: Cosine similarity scores with `all-MiniLM-L6-v2` vary across domains (typically 0.35 to 0.75 for relevant text). Hard-coded similarity cutoff thresholds can cause false negatives by discarding relevant passages; rank-based top-k retrieval paired with model refusal instructions is preferred.
+
+---
+
+### 17.8 Running the Evaluation Script and Full Test Suite
+
+#### Run the Answer-Quality Evaluation Script (Offline / Mock LLM):
+```powershell
+python evaluate_answer_quality.py
+```
+
+#### Run with Live Google Gemini API (Optional, requires GEMINI_API_KEY):
+```powershell
+python evaluate_answer_quality.py --live-llm
+```
+
+#### Generated Report Artifacts:
+- `backend/evaluation_results/answer_quality_report.json`
+- `backend/evaluation_results/answer_quality_report.csv`
+
+#### Run the Full Automated Test Suite (161 Unit Tests):
+```powershell
+python -m pytest -v
+```
+
+All 161 automated unit tests run 100% offline with zero network requests or paid API tokens.
+
+
 

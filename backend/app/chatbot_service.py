@@ -77,6 +77,7 @@ class ChatResponse:
     is_live_llm: bool = False
     created_at: str = field(default_factory=utcnow_iso)
     error: Optional[str] = None
+    unverified_citations: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert response to dictionary."""
@@ -279,6 +280,7 @@ class ChatbotService:
             is_live_llm=is_live,
             created_at=assistant_record["created_at"],
             error=None,
+            unverified_citations=getattr(rag_response, "unverified_citations", []),
         )
 
     # ========================================================================

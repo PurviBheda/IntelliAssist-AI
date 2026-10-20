@@ -50,10 +50,17 @@ from app.vector_store import FAISSVectorStore
 # ============================================================================
 
 def make_deterministic_embedding(text: str, dim: int = 384) -> np.ndarray:
-    """Generate deterministic unit-length vector seeded by text hash."""
-    seed = abs(hash(text)) % (2**32)
-    rng = np.random.default_rng(seed=seed)
-    vec = rng.standard_normal(dim).astype(np.float32)
+    """Generate deterministic unit-length vector seeded by token overlap."""
+    import hashlib
+    import re
+
+    rng = np.random.default_rng(seed=123)
+    vec = 0.1 * rng.standard_normal(dim).astype(np.float32)
+    words = re.findall(r"\w+", text.lower())
+    for word in words:
+        word_seed = int(hashlib.md5(word.encode("utf-8")).hexdigest(), 16) % (2**32)
+        word_rng = np.random.default_rng(seed=word_seed)
+        vec += word_rng.standard_normal(dim).astype(np.float32)
     norm = np.linalg.norm(vec)
     return vec / norm if norm > 0 else vec
 

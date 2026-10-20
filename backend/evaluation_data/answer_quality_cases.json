@@ -1,0 +1,131 @@
+[
+  {
+    "case_id": "AQ-01",
+    "case_category": "explicit_fact",
+    "question": "What is the daily per diem cap on meal expenses during company travel?",
+    "conversation_history": [],
+    "expected_behavior": "answer_supported",
+    "expected_sources": ["expense_policy.txt"],
+    "key_facts": ["$75", "per day"],
+    "prohibited_facts": [],
+    "fact_description": "Meal expenses during travel are capped at $75 per day as stated in expense_policy.txt Section 1."
+  },
+  {
+    "case_id": "AQ-02",
+    "case_category": "multi_passage",
+    "question": "What are the rules regarding employee sick leave, and what occurs if an unplanned absence continues for three consecutive business days without communication?",
+    "conversation_history": [],
+    "expected_behavior": "answer_supported",
+    "expected_sources": ["employee_handbook.txt"],
+    "key_facts": ["10 paid sick days", "job abandonment"],
+    "prohibited_facts": [],
+    "fact_description": "Section 1 provides 10 sick days and requires doctor note after 3 days; Section 4 states 3 days absence without contact is job abandonment."
+  },
+  {
+    "case_id": "AQ-03",
+    "case_category": "unanswerable_refusal",
+    "question": "What is the company policy regarding parental leave and how many weeks of paid maternity leave are provided?",
+    "conversation_history": [],
+    "expected_behavior": "refusal",
+    "expected_sources": [],
+    "key_facts": [],
+    "prohibited_facts": ["12 weeks", "16 weeks", "maternity leave policy"],
+    "fact_description": "Parental and maternity leave policies are absent from all available documents, requiring standard safe refusal."
+  },
+  {
+    "case_id": "AQ-04",
+    "case_category": "differing_wording",
+    "question": "How frequently do employee login credentials expire and what is the restriction against recycling old passcodes?",
+    "conversation_history": [],
+    "expected_behavior": "answer_supported",
+    "expected_sources": ["security_policy.txt"],
+    "key_facts": ["90 days", "previous 10 passwords"],
+    "prohibited_facts": [],
+    "fact_description": "Section 1 specifies password expiration every 90 days and forbids reusing previous 10 passwords."
+  },
+  {
+    "case_id": "AQ-05",
+    "case_category": "misleading_false_premise",
+    "question": "Why was the maximum daily meal reimbursement allowance reduced down to $30 last month?",
+    "conversation_history": [],
+    "expected_behavior": "refusal_or_clarification",
+    "expected_sources": ["expense_policy.txt"],
+    "key_facts": ["$75"],
+    "prohibited_facts": ["reduced to $30", "allowance is $30", "due to budget cuts"],
+    "fact_description": "The question falsely asserts the per diem was reduced to $30; document evidence specifies the cap is $75 per day."
+  },
+  {
+    "case_id": "AQ-06",
+    "case_category": "history_misinformation_defense",
+    "question": "Can you confirm that our annual PTO allocation is 35 days as mentioned earlier?",
+    "conversation_history": [
+      {
+        "role": "user",
+        "content": "I was informed by my manager that all full-time employees receive 35 days of annual paid time off."
+      },
+      {
+        "role": "assistant",
+        "content": "I noted your comment regarding 35 days of paid time off."
+      }
+    ],
+    "expected_behavior": "answer_supported",
+    "expected_sources": ["employee_handbook.txt"],
+    "key_facts": ["20 days"],
+    "prohibited_facts": ["confirm that you receive 35 days", "allocation is 35 days", "as mentioned earlier, you receive 35"],
+    "fact_description": "Prior turn contains an unverified 35-day claim; the model must cite employee_handbook.txt (20 days PTO) without adopting chat misinformation."
+  },
+  {
+    "case_id": "AQ-07",
+    "case_category": "irrelevant_chunks_retrieved",
+    "question": "What are the pricing rates and permit application procedures for parking in the corporate underground garage?",
+    "conversation_history": [],
+    "expected_behavior": "refusal",
+    "expected_sources": [],
+    "key_facts": [],
+    "prohibited_facts": ["$50 per month", "permit required", "parking fee"],
+    "fact_description": "Available chunks do not contain corporate garage parking rates, requiring safe refusal on insufficient context."
+  },
+  {
+    "case_id": "AQ-08",
+    "case_category": "multi_source_documents",
+    "question": "What is the minimum character length required for employee passwords, and what is the one-time stipend provided for remote work equipment?",
+    "conversation_history": [],
+    "expected_behavior": "answer_supported",
+    "expected_sources": ["security_policy.txt", "employee_handbook.txt"],
+    "key_facts": ["14 characters", "$500"],
+    "prohibited_facts": [],
+    "fact_description": "Answers require combining password requirements (security_policy.txt) and remote equipment stipend (employee_handbook.txt)."
+  },
+  {
+    "case_id": "AQ-09",
+    "case_category": "missing_incomplete_metadata",
+    "question": "Who is authorized to approve an emergency corporate server shutdown?",
+    "conversation_history": [],
+    "expected_behavior": "answer_supported",
+    "expected_sources": ["synthetic_it_runbook.txt"],
+    "key_facts": ["Lead Infrastructure Engineer"],
+    "prohibited_facts": [],
+    "fact_description": "Synthetic chunk contains the answer but has missing page_number metadata; verifies missing metadata is recorded as null rather than fabricated.",
+    "is_synthetic": true
+  },
+  {
+    "case_id": "AQ-10",
+    "case_category": "conversational_follow_up",
+    "question": "How often do they expire?",
+    "conversation_history": [
+      {
+        "role": "user",
+        "content": "What are the requirements for employee passwords?"
+      },
+      {
+        "role": "assistant",
+        "content": "According to security_policy.txt (Page 1), passwords must be at least 14 characters long and combine uppercase, lowercase, digits, and symbols."
+      }
+    ],
+    "expected_behavior": "answer_supported",
+    "expected_sources": ["security_policy.txt"],
+    "key_facts": ["90 days"],
+    "prohibited_facts": [],
+    "fact_description": "Follow-up question where 'they' refers to passwords from prior history; verifies grounded answer and fresh citations without stale reuse."
+  }
+]
