@@ -1,0 +1,56 @@
+{
+  "total_queries": 1,
+  "total_indexed_chunks": 1,
+  "k_values": [
+    1,
+    3,
+    5
+  ],
+  "hit_rate_at_k": {
+    "1": 1.0,
+    "3": 1.0,
+    "5": 1.0
+  },
+  "recall_at_k": {
+    "1": 1.0,
+    "3": 1.0,
+    "5": 1.0
+  },
+  "mrr": 1.0,
+  "query_results": [
+    {
+      "query_id": "TEST-01",
+      "question": "How many days off?",
+      "expected_doc": "handbook.txt",
+      "expected_chunk_ids": [
+        "handbook.txt_page_1_chunk_1"
+      ],
+      "fact_description": "20 days PTO",
+      "retrieved_chunks": [
+        {
+          "chunk_id": "handbook.txt_page_1_chunk_1",
+          "similarity_score": 0.88,
+          "is_relevant": true,
+          "rank": 1,
+          "metadata": {
+            "filename": "handbook.txt",
+            "page_number": 1
+          },
+          "text": "Employees receive 20 days PTO."
+        }
+      ],
+      "hit_at_k": {
+        "1": 1,
+        "3": 1,
+        "5": 1
+      },
+      "recall_at_k": {
+        "1": 1.0,
+        "3": 1.0,
+        "5": 1.0
+      },
+      "reciprocal_rank": 1.0,
+      "first_relevant_rank": 1
+    }
+  ]
+}

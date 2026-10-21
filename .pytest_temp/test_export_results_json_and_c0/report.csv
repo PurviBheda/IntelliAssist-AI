@@ -1,0 +1,2 @@
+query_id,question,expected_doc,first_relevant_rank,reciprocal_rank,hit@1,recall@1,hit@3,recall@3,hit@5,recall@5,top1_chunk_id,top1_similarity_score,top1_source_file,top1_is_relevant,fact_description
+TEST-01,How many days off?,handbook.txt,1,1.0000,1,1.0000,1,1.0000,1,1.0000,handbook.txt_page_1_chunk_1,0.8800,handbook.txt,True,20 days PTO

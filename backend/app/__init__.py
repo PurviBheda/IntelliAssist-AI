@@ -43,6 +43,29 @@ from .conversation_store import (
     get_default_db_path,
     utcnow_iso,
 )
+from .summarizer import (
+    ExtractiveSummarizer,
+    SummaryResult,
+    SummaryType,
+    TextSummarizer,
+    split_into_sentences,
+    summarize_text,
+    validate_summarization_input,
+)
+from .sentiment_analyzer import (
+    SentimentAnalyzer,
+    SentimentLabel,
+    SentimentResult,
+    analyze_sentiment,
+    validate_sentiment_input,
+)
+from .intent_detector import (
+    IntentDetector,
+    IntentResult,
+    IntentType,
+    detect_intent,
+    validate_intent_input,
+)
 from .chatbot_service import (
     ChatResponse,
     ChatbotService,
@@ -84,8 +107,24 @@ __all__ = [
     "generate_conversation_title",
     "get_default_db_path",
     "utcnow_iso",
+    "ExtractiveSummarizer",
+    "SummaryResult",
+    "SummaryType",
+    "TextSummarizer",
+    "split_into_sentences",
+    "summarize_text",
+    "validate_summarization_input",
+    "SentimentAnalyzer",
+    "SentimentLabel",
+    "SentimentResult",
+    "analyze_sentiment",
+    "validate_sentiment_input",
+    "IntentDetector",
+    "IntentResult",
+    "IntentType",
+    "detect_intent",
+    "validate_intent_input",
     "ChatResponse",
     "ChatbotService",
     "create_chatbot_service",
 ]
-
