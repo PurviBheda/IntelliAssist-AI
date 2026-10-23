@@ -198,36 +198,85 @@ class GeminiLLMClient(BaseLLMClient):
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model_name: str = DEFAULT_GEMINI_MODEL,
+        model_name: Optional[str] = None,
+        timeout_ms: Optional[int] = None,
     ) -> None:
         """Initialize the Gemini client.
 
         Args:
             api_key: Google Gemini API key. If not provided, reads from
                      GEMINI_API_KEY or GOOGLE_API_KEY environment variables.
-            model_name: Gemini model name (default: 'gemini-2.5-flash').
+            model_name: Gemini model name (defaults to GEMINI_MODEL env var or 'gemini-2.5-flash').
+            timeout_ms: Optional request timeout in milliseconds. If not provided,
+                        checks GEMINI_TIMEOUT_MS or GEMINI_TIMEOUT_SECONDS env vars.
 
         Raises:
             ValueError: If no API key is found in environment or arguments.
             RuntimeError: If google-genai client initialization fails.
         """
-        load_environment_variables()
-        self._model_name = model_name or os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL)
+        resolved_model = model_name or os.getenv("GEMINI_MODEL") or DEFAULT_GEMINI_MODEL
+        self._model_name = resolved_model
         resolved_key = api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
 
-        if not resolved_key or not resolved_key.strip():
+        placeholder_keys = {
+            "your_gemini_api_key_here",
+            "your_actual_key_here",
+            "your_api_key_here",
+            "TODO",
+            "CHANGEME",
+        }
+        if not resolved_key or not resolved_key.strip() or resolved_key.strip() in placeholder_keys:
             raise ValueError(
-                "Gemini API key is missing. Please set the GEMINI_API_KEY environment variable "
-                "or configure it in backend/.env. Obtain an API key from Google AI Studio: "
-                "https://aistudio.google.com/"
+                "Gemini API key is missing or set to a placeholder value. Please set the GEMINI_API_KEY "
+                "environment variable or configure it in backend/.env. Obtain an API key from "
+                "Google AI Studio: https://aistudio.google.com/"
             )
 
         self._api_key = resolved_key.strip()
 
+        # Resolve timeout in milliseconds (default: 30,000ms = 30s)
+        resolved_timeout_ms = timeout_ms
+        if resolved_timeout_ms is None:
+            env_timeout_ms = os.getenv("GEMINI_TIMEOUT_MS")
+            if env_timeout_ms:
+                try:
+                    resolved_timeout_ms = int(env_timeout_ms)
+                except ValueError:
+                    pass
+            elif os.getenv("GEMINI_TIMEOUT_SECONDS"):
+                try:
+                    resolved_timeout_ms = int(float(os.getenv("GEMINI_TIMEOUT_SECONDS")) * 1000)
+                except ValueError:
+                    pass
+            else:
+                resolved_timeout_ms = 30000
+
+        self._timeout_ms = resolved_timeout_ms
+
+        # Resolve max retries (default: 1 retry attempt to prevent 97-100s cascading waits)
+        resolved_max_retries = 1
+        env_retries = os.getenv("GEMINI_MAX_RETRIES")
+        if env_retries is not None:
+            try:
+                resolved_max_retries = max(0, int(env_retries))
+            except ValueError:
+                pass
+        self._max_retries = resolved_max_retries
+
         try:
             from google import genai
+            from google.genai import types
 
-            self._client = genai.Client(api_key=self._api_key)
+            retry_opts = types.HttpRetryOptions(
+                attempts=self._max_retries,
+                initial_delay=0.5,
+                max_delay=2.0,
+            )
+            http_opts = types.HttpOptions(
+                timeout=self._timeout_ms,
+                retry_options=retry_opts,
+            )
+            self._client = genai.Client(api_key=self._api_key, http_options=http_opts)
         except Exception as e:
             raise RuntimeError(
                 f"Failed to initialize Google GenAI client: {self._sanitize_error(str(e))}"
@@ -237,29 +286,127 @@ class GeminiLLMClient(BaseLLMClient):
     def model_name(self) -> str:
         return self._model_name
 
-    def _sanitize_error(self, message: str) -> str:
+    @property
+    def timeout_ms(self) -> Optional[int]:
+        return self._timeout_ms
+
+    @property
+    def max_retries(self) -> int:
+        return self._max_retries
+
+    def _sanitize_error(self, message: Any) -> str:
         """Redact sensitive API keys from error messages."""
-        if hasattr(self, "_api_key") and self._api_key and self._api_key in message:
-            return message.replace(self._api_key, "[REDACTED_API_KEY]")
-        return message
+        msg_str = str(message) if not isinstance(message, str) else message
+        if hasattr(self, "_api_key") and self._api_key and self._api_key in msg_str:
+            msg_str = msg_str.replace(self._api_key, "[REDACTED_API_KEY]")
+        # Redact Google API key patterns (e.g. AIzaSy...)
+        msg_str = re.sub(r"AIza[0-9A-Za-z_\-]{20,}", "[REDACTED_API_KEY]", msg_str)
+        # Redact keys in URLs or query strings
+        msg_str = re.sub(r"(key=)[^&\s]+", r"\1[REDACTED_API_KEY]", msg_str)
+        return msg_str
 
+   
     def generate_response(self, system_instruction: str, prompt: str) -> str:
-        """Generate response via Google Gemini API."""
+        """Generate a response using the Google Gemini Interactions API."""
         try:
-            from google.genai import types
+            timeout_sec = float(self._timeout_ms) / 1000.0 if self._timeout_ms else None
+            create_kwargs: Dict[str, Any] = {
+                "model": self._model_name,
+                "input": prompt,
+                "system_instruction": system_instruction,
+                "generation_config": {
+                    "temperature": 0.0,
+                },
+            }
+            if timeout_sec is not None:
+                create_kwargs["timeout"] = timeout_sec
 
-            response = self._client.models.generate_content(
-                model=self._model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    system_instruction=system_instruction,
-                    temperature=0.0,
-                ),
+            response = self._client.interactions.create(**create_kwargs)
+
+            # Check for API error details on the interaction object
+            response_errors = getattr(response, "errors", None) or (
+                response.get("errors") if isinstance(response, dict) else None
             )
-            return response.text or ""
+            if response_errors and isinstance(response_errors, list):
+                err_details: List[str] = []
+                for err in response_errors:
+                    msg = getattr(err, "message", None) or (
+                        err.get("message") if isinstance(err, dict) else str(err)
+                    )
+                    code = getattr(err, "code", None) or (
+                        err.get("code") if isinstance(err, dict) else None
+                    )
+                    err_details.append(f"{code}: {msg}" if code else str(msg))
+                err_str = "; ".join(err_details)
+                raise RuntimeError(f"Gemini API returned errors: {self._sanitize_error(err_str)}")
+
+            # Check interaction completion status
+            response_status = getattr(response, "status", None) or (
+                response.get("status") if isinstance(response, dict) else None
+            )
+            if response_status in ("failed", "cancelled", "incomplete", "budget_exceeded"):
+                raise RuntimeError(
+                    f"Gemini interaction did not complete (status: '{response_status}')."
+                )
+
+            # Extract output text from response
+            text_val: Optional[str] = None
+            try:
+                text_val = response.output_text
+            except Exception:
+                text_val = None
+
+            # Fallback extraction from response steps if output_text attribute was omitted
+            if not text_val:
+                steps = getattr(response, "steps", None) or (
+                    response.get("steps") if isinstance(response, dict) else None
+                )
+                if isinstance(steps, list):
+                    text_parts: List[str] = []
+                    for step in steps:
+                        stype = getattr(step, "type", None) or (
+                            step.get("type") if isinstance(step, dict) else None
+                        )
+                        if stype == "model_output":
+                            content = getattr(step, "content", None) or (
+                                step.get("content") if isinstance(step, dict) else None
+                            )
+                            if isinstance(content, list):
+                                for item in content:
+                                    itype = getattr(item, "type", None) or (
+                                        item.get("type") if isinstance(item, dict) else None
+                                    )
+                                    if itype == "text":
+                                        txt = getattr(item, "text", "") or (
+                                            item.get("text", "") if isinstance(item, dict) else ""
+                                        )
+                                        if txt:
+                                            text_parts.append(txt)
+                    if text_parts:
+                        text_val = "".join(text_parts)
+
+            cleaned_text = (text_val or "").strip()
+
+            if not cleaned_text:
+                raise RuntimeError(
+                    "Gemini API returned an empty or blocked response."
+                )
+
+            return cleaned_text
+
         except Exception as e:
-            sanitized = self._sanitize_error(str(e))
-            raise RuntimeError(f"Gemini API generation failed: {sanitized}") from None
+            raw_msg = str(e)
+            sanitized = self._sanitize_error(raw_msg)
+            if sanitized.startswith("Gemini API generation failed"):
+                raise RuntimeError(sanitized) from None
+            status_code = getattr(e, "status_code", None)
+            if status_code is None and hasattr(e, "response") and hasattr(e.response, "status_code"):
+                status_code = e.response.status_code
+            status_tag = f" [HTTP {status_code}]" if status_code else ""
+            raise RuntimeError(
+                f"Gemini API generation failed{status_tag}: {sanitized}"
+            ) from None
+
 
 
 class MockLLMClient(BaseLLMClient):
@@ -608,6 +755,83 @@ def is_context_insufficient_response(answer_text: str) -> bool:
     return any(phrase in lower for phrase in insufficient_phrases)
 
 
+def is_followup_query(question: str) -> bool:
+    """Detect whether a question is a conversational follow-up relying on prior context."""
+    q_lower = question.strip().lower()
+    words = set(re.findall(r"\b[a-z]+\b", q_lower))
+
+    # Pronouns referring to prior entities/subjects
+    pronouns = {"it", "its", "they", "them", "their", "this", "that", "these", "those", "he", "she", "him", "her"}
+    if words & pronouns:
+        return True
+
+    # Elliptical / continuation question starters
+    followup_starters = (
+        "how about",
+        "what about",
+        "and what",
+        "and how",
+        "how often",
+        "how many",
+        "how much",
+        "why is that",
+        "why does it",
+        "can they",
+        "can it",
+        "does it",
+        "is it",
+        "are they",
+        "who approved",
+    )
+    if any(q_lower.startswith(prefix) for prefix in followup_starters):
+        return True
+
+    # Continuation adverbs/phrases
+    continuation_markers = {"also", "instead", "meanwhile", "furthermore", "additionally"}
+    if words & continuation_markers and len(words) < 8:
+        return True
+
+    # Very short queries lacking subject (e.g. "why?", "where?", "when?")
+    if len(words) <= 3 and any(w in words for w in {"why", "when", "where", "how", "who", "which"}):
+        return True
+
+    return False
+
+
+def build_retrieval_query(
+    question: str,
+    conversation_history: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    """Build an optimal semantic search query balancing current question with conversational context.
+
+    For standalone questions, uses the validated question directly to prevent past topics
+    from swamping retrieval. For follow-up questions containing pronouns or elliptical phrases,
+    supplements the query with the most recent user inquiry topic without including
+    assistant output citations or fabricated facts.
+    """
+    cleaned_question = question.strip()
+    if not conversation_history:
+        return cleaned_question
+
+    if not is_followup_query(cleaned_question):
+        return cleaned_question
+
+    # Extract user questions from conversation history (ignore assistant outputs)
+    recent_user_queries = [
+        (msg.get("content") or "").strip()
+        for msg in conversation_history
+        if (msg.get("role") == "user" or not msg.get("role"))
+        and (msg.get("content") or "").strip()
+    ]
+
+    if not recent_user_queries:
+        return cleaned_question
+
+    last_user_query = recent_user_queries[-1]
+    # Current question takes priority; append previous user question topic as context
+    return f"{cleaned_question} (Context: {last_user_query})"
+
+
 # ============================================================================
 # Main RAG Pipeline Class
 # ============================================================================
@@ -715,7 +939,9 @@ class RAGPipeline:
 
         # 3. Query embedding
         try:
-            query_vector = self.embedding_service.embed_text(cleaned_question)
+            # Construct conversation-aware retrieval query
+            retrieval_query = build_retrieval_query(cleaned_question, conversation_history)
+            query_vector = self.embedding_service.embed_text(retrieval_query)
         except Exception as e:
             return RAGResponse(
                 question=cleaned_question,

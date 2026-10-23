@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Union
 import zipfile
 
-import fitz  # PyMuPDF
+import pymupdf as fitz  # PyMuPDF
 from docx import Document
 from docx.table import Table
 from docx.text.paragraph import Paragraph

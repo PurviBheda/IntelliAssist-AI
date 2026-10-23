@@ -279,7 +279,13 @@ def run_smoke_test() -> int:
     # ------------------------------------------------------------------------
     print_header("PART B: Optional Real-LLM Integration Test (Google Gemini)")
 
-    gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    local_only = os.getenv("INTELLIASSIST_LOCAL_ONLY", "").strip() == "1"
+
+    gemini_key = (
+    None
+    if local_only
+    else os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    )
 
     if not gemini_key or not gemini_key.strip():
         print("\n[NOTICE: LIVE LLM GENERATION SKIPPED]")
@@ -292,13 +298,12 @@ def run_smoke_test() -> int:
         print("    3. Or in PowerShell: $env:GEMINI_API_KEY = 'your_actual_key_here'")
         print("    4. Re-run: python smoke_test_chatbot.py")
     else:
-        masked_key = gemini_key[:4] + "..." + gemini_key[-4:] if len(gemini_key) > 8 else "***"
         print(f"\n[LIVE GENERATION DETECTED]")
-        print(f"  Found Gemini API key: {masked_key} (Strictly confidential)")
-        print("  Initializing live GeminiLLMClient (model: gemini-2.5-flash)...")
+        print("  Found Gemini API key in configuration (Key remains strictly confidential and unprinted)")
+        print("  Initializing live GeminiLLMClient...")
 
         try:
-            live_llm = GeminiLLMClient(model_name=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"))
+            live_llm = GeminiLLMClient()
             live_pipeline = RAGPipeline(
                 vector_store=vector_store,
                 embedding_service=embedding_service,
@@ -350,9 +355,12 @@ def run_smoke_test() -> int:
             print("\n  -> Part B Succeeded: Live Google Gemini multi-turn generation verified!")
 
         except Exception as e:
-            sanitized = str(e)
-            if gemini_key in sanitized:
+            sanitized = live_llm._sanitize_error(str(e)) if "live_llm" in locals() else str(e)
+            if gemini_key and gemini_key in sanitized:
                 sanitized = sanitized.replace(gemini_key, "[REDACTED_API_KEY]")
+            import re
+            sanitized = re.sub(r"AIza[0-9A-Za-z_\-]{20,}", "[REDACTED_API_KEY]", sanitized)
+            sanitized = re.sub(r"(key=)[^&\s]+", r"\1[REDACTED_API_KEY]", sanitized)
             print(f"\n  [WARNING] Live Gemini API call could not be completed: {sanitized}")
             print("  Note: All unit tests and local chatbot components remain fully operational.")
 

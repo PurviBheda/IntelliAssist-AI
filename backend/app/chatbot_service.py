@@ -350,6 +350,12 @@ class ChatbotService:
         retrieved_chunks: List[Dict[str, Any]] = []
         sufficient = True
 
+        # Ensure summarizer has active llm_client if pipeline has one
+        if getattr(self.summarizer, "llm_client", None) is None:
+            pipeline_client = getattr(self.rag_pipeline, "llm_client", None)
+            if pipeline_client is not None:
+                self.summarizer.llm_client = pipeline_client
+
         # Case A: Summarize inline text
         if inline_text:
             sum_res = self.summarizer.summarize(
@@ -416,6 +422,7 @@ class ChatbotService:
                     citations = build_citations(retrieved_chunks, response_text)
 
         status_code = "success" if sufficient else "insufficient_context"
+        is_live = self._determine_is_live_llm() if getattr(sum_res, "method", "") == "llm" else False
 
         assistant_record = self.conversation_store.add_message(
             conversation_id=cid,
@@ -427,6 +434,7 @@ class ChatbotService:
                 "intent_confidence": intent_res.confidence,
                 "summary_type": summary_type,
                 "sufficient_context": sufficient,
+                "is_live_llm": is_live,
             },
         )
 
@@ -439,7 +447,7 @@ class ChatbotService:
             sufficient_context=sufficient,
             status=status_code,
             model_name=getattr(getattr(self.rag_pipeline, "llm_client", None), "model_name", None),
-            is_live_llm=False,
+            is_live_llm=is_live,
             created_at=assistant_record["created_at"],
             intent=IntentType.SUMMARIZE.value,
             intent_confidence=intent_res.confidence,

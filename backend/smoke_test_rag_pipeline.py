@@ -236,13 +236,11 @@ def run_smoke_test() -> int:
         print("    4. Re-run: python smoke_test_rag_pipeline.py")
     else:
         print("\n[LIVE GENERATION DETECTED]")
-        # Redact key in all logs
-        masked_key = gemini_key[:4] + "..." + gemini_key[-4:] if len(gemini_key) > 8 else "***"
-        print(f"  Found Gemini API key: {masked_key} (Key remains strictly confidential)")
-        print("  Initializing real GeminiLLMClient (model: gemini-2.5-flash)...")
+        print("  Found Gemini API key in configuration (Key remains strictly confidential and unprinted)")
+        print("  Initializing real GeminiLLMClient...")
 
         try:
-            live_client = GeminiLLMClient(model_name=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"))
+            live_client = GeminiLLMClient()
             live_pipeline = RAGPipeline(
                 vector_store=vector_store,
                 embedding_service=embedding_service,
@@ -276,9 +274,12 @@ def run_smoke_test() -> int:
             print("\n  -> Part B Succeeded: Live Google Gemini generation verified!")
         except Exception as e:
             # Catch any network or quota issues safely without exposing secrets
-            sanitized_err = str(e)
-            if gemini_key in sanitized_err:
+            sanitized_err = live_client._sanitize_error(str(e)) if "live_client" in locals() else str(e)
+            if gemini_key and gemini_key in sanitized_err:
                 sanitized_err = sanitized_err.replace(gemini_key, "[REDACTED_API_KEY]")
+            import re
+            sanitized_err = re.sub(r"AIza[0-9A-Za-z_\-]{20,}", "[REDACTED_API_KEY]", sanitized_err)
+            sanitized_err = re.sub(r"(key=)[^&\s]+", r"\1[REDACTED_API_KEY]", sanitized_err)
             print(f"\n  [WARNING] Live Gemini API call could not be completed: {sanitized_err}")
             print("  Note: Unit tests and offline pipeline verification remain fully passed.")
 

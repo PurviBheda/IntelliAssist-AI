@@ -446,6 +446,7 @@ class TextSummarizer:
             )
 
         # 3. Attempt LLM generation if available and preferred
+        llm_fallback_error: Optional[str] = None
         if prefer_llm and self.llm_client is not None:
             try:
                 sys_inst, prompt = self._build_llm_prompts(cleaned_text, norm_type)
@@ -470,16 +471,20 @@ class TextSummarizer:
                         method="llm",
                         status="success",
                     )
-            except Exception:
-                # Fall back gracefully to extractive engine on LLM failure
-                pass
+            except Exception as e:
+                # Fall back gracefully to extractive engine on LLM failure,
+                # recording diagnostic note so callers know why fallback occurred
+                llm_fallback_error = f"LLM generation failed ({e}); fell back to extractive engine"
 
         # 4. Fallback or direct extractive summarization
-        return self.extractive_engine.summarize(
+        extractive_result = self.extractive_engine.summarize(
             text=cleaned_text,
             summary_type=norm_type,
             max_sentences=max_sentences,
         )
+        if llm_fallback_error and extractive_result.status == "success":
+            extractive_result.error = llm_fallback_error
+        return extractive_result
 
 
 # ============================================================================

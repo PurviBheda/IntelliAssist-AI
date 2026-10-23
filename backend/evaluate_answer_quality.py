@@ -348,7 +348,10 @@ def main() -> int:
                 is_live = True
                 print("  LLM Mode: Live Cloud Model (Google Gemini API)")
             except Exception as e:
-                print(f"  [WARNING] Live Gemini initialization failed: {e}. Falling back to mock client.")
+                err_str = re.sub(r"AIza[0-9A-Za-z_\-]{20,}", "[REDACTED_API_KEY]", str(e))
+                if api_key and api_key.strip() in err_str:
+                    err_str = err_str.replace(api_key.strip(), "[REDACTED_API_KEY]")
+                print(f"  [WARNING] Live Gemini initialization failed: {err_str}. Falling back to mock client.")
                 llm_client = build_evaluation_mock_llm()
         else:
             print("  [WARNING] --live-llm specified but GEMINI_API_KEY is not configured.")
