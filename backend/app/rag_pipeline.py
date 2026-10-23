@@ -1045,9 +1045,9 @@ class RAGPipeline:
             )
 
         # 10. Extract citations and check sufficiency
-        citations = build_citations(retrieved_chunks, generated_answer)
+        citations = build_citations(chunks_in_prompt, generated_answer)
         sufficient = not is_context_insufficient_response(generated_answer)
-        unverified = detect_unverified_citations(generated_answer, retrieved_chunks)
+        unverified = detect_unverified_citations(generated_answer, chunks_in_prompt)
 
         return RAGResponse(
             question=cleaned_question,
