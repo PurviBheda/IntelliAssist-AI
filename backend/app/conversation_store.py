@@ -128,13 +128,17 @@ class MessageRecord:
 class ConversationStore:
     """SQLite-backed persistent repository for conversations and message history."""
 
-    SCHEMA_STATEMENTS = [
+    SCHEMA_TABLE_STATEMENTS = [
         """
         CREATE TABLE IF NOT EXISTS conversations (
             conversation_id TEXT PRIMARY KEY,
             title TEXT NOT NULL,
             created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
+            updated_at TEXT NOT NULL,
+            is_starred INTEGER DEFAULT 0,
+            is_shared INTEGER DEFAULT 0,
+            share_id TEXT,
+            shared_at TEXT
         );
         """,
         """
@@ -150,14 +154,6 @@ class ConversationStore:
         );
         """,
         """
-        CREATE INDEX IF NOT EXISTS idx_messages_conversation_created
-            ON messages(conversation_id, created_at ASC);
-        """,
-        """
-        CREATE INDEX IF NOT EXISTS idx_conversations_updated
-            ON conversations(updated_at DESC);
-        """,
-        """
         CREATE TABLE IF NOT EXISTS conversation_documents (
             document_id TEXT PRIMARY KEY,
             conversation_id TEXT NOT NULL,
@@ -171,11 +167,36 @@ class ConversationStore:
             FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id) ON DELETE CASCADE
         );
         """,
+    ]
+
+    SCHEMA_INDEX_STATEMENTS = [
+        """
+        CREATE INDEX IF NOT EXISTS idx_messages_conversation_created
+            ON messages(conversation_id, created_at ASC);
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_conversations_updated
+            ON conversations(updated_at DESC);
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_conversations_starred
+            ON conversations(is_starred, updated_at DESC);
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_conversations_shared
+            ON conversations(is_shared, updated_at DESC);
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_conversations_share_id
+            ON conversations(share_id);
+        """,
         """
         CREATE INDEX IF NOT EXISTS idx_documents_conversation
             ON conversation_documents(conversation_id, created_at ASC);
         """,
     ]
+
+    SCHEMA_STATEMENTS = SCHEMA_TABLE_STATEMENTS + SCHEMA_INDEX_STATEMENTS
 
     def __init__(self, db_path: Optional[Union[str, Path]] = None) -> None:
         """Initialize the conversation store and ensure schema existence.
@@ -235,10 +256,26 @@ class ConversationStore:
                 conn.close()
 
     def _initialize_schema(self) -> None:
-        """Create database tables and indexes if they do not already exist."""
+        """Create database tables, run safe column migrations, and create indexes."""
         with self._get_connection() as conn:
             with conn:
-                for statement in self.SCHEMA_STATEMENTS:
+                for statement in self.SCHEMA_TABLE_STATEMENTS:
+                    conn.execute(statement)
+
+                # Migration for conversations table: is_starred, is_shared, share_id, shared_at
+                cursor = conn.execute("PRAGMA table_info(conversations);")
+                columns = {row["name"] for row in cursor.fetchall()}
+
+                if "is_starred" not in columns:
+                    conn.execute("ALTER TABLE conversations ADD COLUMN is_starred INTEGER DEFAULT 0;")
+                if "is_shared" not in columns:
+                    conn.execute("ALTER TABLE conversations ADD COLUMN is_shared INTEGER DEFAULT 0;")
+                if "share_id" not in columns:
+                    conn.execute("ALTER TABLE conversations ADD COLUMN share_id TEXT;")
+                if "shared_at" not in columns:
+                    conn.execute("ALTER TABLE conversations ADD COLUMN shared_at TEXT;")
+
+                for statement in self.SCHEMA_INDEX_STATEMENTS:
                     conn.execute(statement)
 
     def close(self) -> None:
@@ -307,7 +344,12 @@ class ConversationStore:
             "title": resolved_title,
             "created_at": now,
             "updated_at": now,
+            "is_starred": False,
+            "is_shared": False,
+            "share_id": None,
+            "shared_at": None,
             "message_count": 0,
+            "documents": [],
         }
 
     def conversation_exists(self, conversation_id: str) -> bool:
@@ -349,6 +391,10 @@ class ConversationStore:
                     c.title,
                     c.created_at,
                     c.updated_at,
+                    c.is_starred,
+                    c.is_shared,
+                    c.share_id,
+                    c.shared_at,
                     COUNT(m.message_id) AS message_count
                 FROM conversations c
                 LEFT JOIN messages m ON c.conversation_id = m.conversation_id
@@ -366,16 +412,28 @@ class ConversationStore:
                 "title": row["title"],
                 "created_at": row["created_at"],
                 "updated_at": row["updated_at"],
+                "is_starred": bool(row["is_starred"]) if "is_starred" in row.keys() and row["is_starred"] else False,
+                "is_shared": bool(row["is_shared"]) if "is_shared" in row.keys() and row["is_shared"] else False,
+                "share_id": row["share_id"] if "share_id" in row.keys() else None,
+                "shared_at": row["shared_at"] if "shared_at" in row.keys() else None,
                 "message_count": int(row["message_count"]),
                 "documents": self.get_documents(conversation_id),
             }
 
-    def list_conversations(self, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
+    def list_conversations(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        only_starred: bool = False,
+        only_shared: bool = False,
+    ) -> List[Dict[str, Any]]:
         """List conversations ordered by most recently updated first.
 
         Args:
             limit: Maximum number of conversations to retrieve (default: 50).
             offset: Pagination offset (default: 0).
+            only_starred: If True, returns only starred conversations.
+            only_shared: If True, returns only shared conversations.
 
         Returns:
             List of conversation dictionaries.
@@ -385,17 +443,30 @@ class ConversationStore:
         if not isinstance(offset, int) or offset < 0:
             offset = 0
 
+        where_clauses: List[str] = []
+        if only_starred:
+            where_clauses.append("c.is_starred = 1")
+        if only_shared:
+            where_clauses.append("c.is_shared = 1")
+
+        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+
         with self._get_connection() as conn:
             cursor = conn.execute(
-                """
+                f"""
                 SELECT 
                     c.conversation_id,
                     c.title,
                     c.created_at,
                     c.updated_at,
+                    c.is_starred,
+                    c.is_shared,
+                    c.share_id,
+                    c.shared_at,
                     COUNT(m.message_id) AS message_count
                 FROM conversations c
                 LEFT JOIN messages m ON c.conversation_id = m.conversation_id
+                {where_sql}
                 GROUP BY c.conversation_id
                 ORDER BY c.updated_at DESC
                 LIMIT ? OFFSET ?;
@@ -410,6 +481,10 @@ class ConversationStore:
                     "title": row["title"],
                     "created_at": row["created_at"],
                     "updated_at": row["updated_at"],
+                    "is_starred": bool(row["is_starred"]) if "is_starred" in row.keys() and row["is_starred"] else False,
+                    "is_shared": bool(row["is_shared"]) if "is_shared" in row.keys() and row["is_shared"] else False,
+                    "share_id": row["share_id"] if "share_id" in row.keys() else None,
+                    "shared_at": row["shared_at"] if "shared_at" in row.keys() else None,
                     "message_count": int(row["message_count"]),
                     "documents": self.get_documents(row["conversation_id"]),
                 }
@@ -802,4 +877,102 @@ class ConversationStore:
                 """
             )
             return [dict(row) for row in cursor.fetchall()]
+
+    # ========================================================================
+    # Star & Share Operations
+    # ========================================================================
+
+    def set_conversation_starred(
+        self,
+        conversation_id: str,
+        is_starred: bool,
+    ) -> bool:
+        """Update the starred status of a conversation."""
+        if not conversation_id or not isinstance(conversation_id, str):
+            return False
+
+        starred_val = 1 if is_starred else 0
+        now = utcnow_iso()
+        with self._get_connection() as conn:
+            with conn:
+                cursor = conn.execute(
+                    "UPDATE conversations SET is_starred = ?, updated_at = ? WHERE conversation_id = ?;",
+                    (starred_val, now, conversation_id),
+                )
+                return cursor.rowcount > 0
+
+    def toggle_conversation_starred(self, conversation_id: str) -> Optional[bool]:
+        """Toggle the starred status of a conversation and return the new status."""
+        conv = self.get_conversation(conversation_id)
+        if conv is None:
+            return None
+
+        new_status = not conv.get("is_starred", False)
+        self.set_conversation_starred(conversation_id, new_status)
+        return new_status
+
+    def share_conversation(self, conversation_id: str) -> Optional[Dict[str, Any]]:
+        """Enable sharing for a conversation, generating a unique share_id if needed."""
+        conv = self.get_conversation(conversation_id)
+        if conv is None:
+            return None
+
+        share_id = conv.get("share_id") or uuid.uuid4().hex[:12]
+        now = utcnow_iso()
+
+        with self._get_connection() as conn:
+            with conn:
+                conn.execute(
+                    """
+                    UPDATE conversations 
+                    SET is_shared = 1, share_id = ?, shared_at = ?, updated_at = ?
+                    WHERE conversation_id = ?;
+                    """,
+                    (share_id, now, now, conversation_id),
+                )
+
+        return {
+            "conversation_id": conversation_id,
+            "share_id": share_id,
+            "shared_at": now,
+            "is_shared": True,
+        }
+
+    def unshare_conversation(self, conversation_id: str) -> bool:
+        """Revoke sharing for a conversation."""
+        with self._get_connection() as conn:
+            with conn:
+                cursor = conn.execute(
+                    "UPDATE conversations SET is_shared = 0 WHERE conversation_id = ?;",
+                    (conversation_id,),
+                )
+                return cursor.rowcount > 0
+
+    def get_conversation_by_share_id(self, share_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve a shared conversation and all its messages by public share_id."""
+        if not share_id or not isinstance(share_id, str):
+            return None
+
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                SELECT conversation_id, is_shared FROM conversations
+                WHERE share_id = ? AND is_shared = 1 LIMIT 1;
+                """,
+                (share_id,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return None
+
+            return self.get_conversation_with_messages(row["conversation_id"])
+
+    def list_starred_conversations(self, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
+        """List starred conversations ordered by updated_at descending."""
+        return self.list_conversations(limit=limit, offset=offset, only_starred=True)
+
+    def list_shared_conversations(self, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
+        """List shared conversations ordered by updated_at descending."""
+        return self.list_conversations(limit=limit, offset=offset, only_shared=True)
+
 

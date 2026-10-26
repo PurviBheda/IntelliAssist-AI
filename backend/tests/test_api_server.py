@@ -147,3 +147,69 @@ def test_delete_conversation(client: TestClient):
     # Getting deleted conversation returns 404
     get_resp = client.get(f"/api/conversations/{cid}")
     assert get_resp.status_code == 404
+
+
+def test_star_and_unstar_conversation(client: TestClient):
+    """Verify starring and unstarring conversations via API."""
+    conv_resp = client.post("/api/conversations", json={"title": "Starred Discussion"})
+    cid = conv_resp.json()["conversation_id"]
+
+    # Initially not starred
+    assert conv_resp.json().get("is_starred") in (False, 0, None)
+
+    # Star conversation
+    star_resp = client.post(f"/api/conversations/{cid}/star", json={"is_starred": True})
+    assert star_resp.status_code == 200
+    assert star_resp.json()["is_starred"] is True
+
+    # Check starred list
+    list_starred = client.get("/api/conversations?starred=true")
+    assert list_starred.status_code == 200
+    starred_ids = [c["conversation_id"] for c in list_starred.json()]
+    assert cid in starred_ids
+
+    # Unstar conversation
+    unstar_resp = client.post(f"/api/conversations/{cid}/star", json={"is_starred": False})
+    assert unstar_resp.status_code == 200
+    assert unstar_resp.json()["is_starred"] is False
+
+    # Check removed from starred list
+    list_starred_after = client.get("/api/conversations?starred=true")
+    starred_ids_after = [c["conversation_id"] for c in list_starred_after.json()]
+    assert cid not in starred_ids_after
+
+
+def test_share_and_retrieve_public_conversation(client: TestClient):
+    """Verify sharing conversation, retrieving via share_id, and unsharing."""
+    conv_resp = client.post("/api/conversations", json={"title": "Shareable Report"})
+    cid = conv_resp.json()["conversation_id"]
+
+    # Share conversation
+    share_resp = client.post(f"/api/conversations/{cid}/share")
+    assert share_resp.status_code == 200
+    data = share_resp.json()
+    assert data["is_shared"] is True
+    share_id = data["share_id"]
+    assert share_id is not None
+    assert len(share_id) > 0
+
+    # Retrieve via public share endpoint
+    public_resp = client.get(f"/api/share/{share_id}")
+    assert public_resp.status_code == 200
+    public_conv = public_resp.json()
+    assert public_conv["conversation_id"] == cid
+    assert public_conv["title"] == "Shareable Report"
+
+    # Listed in shared conversations
+    shared_list = client.get("/api/conversations?shared=true")
+    assert shared_list.status_code == 200
+    assert any(c["conversation_id"] == cid for c in shared_list.json())
+
+    # Revoke share
+    unshare_resp = client.delete(f"/api/conversations/{cid}/share")
+    assert unshare_resp.status_code == 200
+
+    # Share link now returns 404
+    public_after = client.get(f"/api/share/{share_id}")
+    assert public_after.status_code == 404
+

@@ -172,6 +172,10 @@ class CreateConversationRequest(BaseModel):
     conversation_id: Optional[str] = Field(None, description="Optional custom conversation UUID")
 
 
+class StarConversationRequest(BaseModel):
+    is_starred: Optional[bool] = None
+
+
 # ============================================================================
 # Endpoints
 # ============================================================================
@@ -195,9 +199,16 @@ def health_check() -> Dict[str, Any]:
 def list_conversations(
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    starred: bool = Query(False),
+    shared: bool = Query(False),
 ) -> List[Dict[str, Any]]:
-    """List recent conversations ordered by last updated descending."""
-    return conversation_store.list_conversations(limit=limit, offset=offset)
+    """List recent conversations ordered by last updated descending, optionally filtered by starred or shared."""
+    return conversation_store.list_conversations(
+        limit=limit,
+        offset=offset,
+        only_starred=starred,
+        only_shared=shared,
+    )
 
 
 @app.post("/api/conversations")
@@ -222,6 +233,63 @@ def get_conversation_details(conversation_id: str) -> Dict[str, Any]:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Conversation '{conversation_id}' not found.",
+        )
+    return conv
+
+
+@app.post("/api/conversations/{conversation_id}/star")
+def star_conversation(
+    conversation_id: str,
+    req: Optional[StarConversationRequest] = None,
+) -> Dict[str, Any]:
+    """Toggle or set the starred status of a conversation."""
+    if not conversation_store.conversation_exists(conversation_id):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Conversation '{conversation_id}' not found.",
+        )
+
+    if req is not None and req.is_starred is not None:
+        conversation_store.set_conversation_starred(conversation_id, req.is_starred)
+        new_status = req.is_starred
+    else:
+        new_status = conversation_store.toggle_conversation_starred(conversation_id)
+
+    return {"conversation_id": conversation_id, "is_starred": new_status}
+
+
+@app.post("/api/conversations/{conversation_id}/share")
+def share_conversation(conversation_id: str) -> Dict[str, Any]:
+    """Enable sharing for a conversation and generate a share identifier."""
+    res = conversation_store.share_conversation(conversation_id)
+    if res is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Conversation '{conversation_id}' not found.",
+        )
+    return res
+
+
+@app.delete("/api/conversations/{conversation_id}/share")
+def unshare_conversation(conversation_id: str) -> Dict[str, Any]:
+    """Revoke sharing for a conversation."""
+    if not conversation_store.conversation_exists(conversation_id):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Conversation '{conversation_id}' not found.",
+        )
+    conversation_store.unshare_conversation(conversation_id)
+    return {"status": "success", "conversation_id": conversation_id, "is_shared": False}
+
+
+@app.get("/api/share/{share_id}")
+def get_shared_conversation(share_id: str) -> Dict[str, Any]:
+    """Public read-only endpoint to retrieve a shared conversation."""
+    conv = conversation_store.get_conversation_by_share_id(share_id)
+    if conv is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Shared conversation not found or access has been revoked.",
         )
     return conv
 

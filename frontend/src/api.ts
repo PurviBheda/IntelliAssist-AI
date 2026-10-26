@@ -42,6 +42,10 @@ export interface ConversationItem {
   created_at: string
   updated_at: string
   message_count: number
+  is_starred?: boolean
+  is_shared?: boolean
+  share_id?: string | null
+  shared_at?: string | null
   documents?: DocumentRecord[]
   messages?: ChatMessage[]
 }
@@ -106,8 +110,15 @@ export async function fetchHealth(): Promise<{
 
 export async function fetchConversations(
   limit = 50,
+  starred = false,
+  shared = false,
 ): Promise<ConversationItem[]> {
-  const res = await requestWithFallback(`/api/conversations?limit=${limit}`)
+  const params = new URLSearchParams({ limit: String(limit) })
+  if (starred) params.set("starred", "true")
+  if (shared) params.set("shared", "true")
+  const res = await requestWithFallback(
+    `/api/conversations?${params.toString()}`,
+  )
   if (!res.ok) {
     throw new Error(`Failed to list conversations: ${res.statusText}`)
   }
@@ -139,6 +150,84 @@ export async function createConversation(
     const err = await res.json().catch(() => ({}))
     throw new Error(
       err.detail || `Failed to create conversation: ${res.statusText}`,
+    )
+  }
+  return res.json()
+}
+
+export async function toggleStarConversation(
+  conversationId: string,
+  isStarred?: boolean,
+): Promise<{
+  conversation_id: string
+  is_starred: boolean
+}> {
+  const res = await requestWithFallback(
+    `/api/conversations/${encodeURIComponent(conversationId)}/star`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(
+        isStarred !== undefined ? { is_starred: isStarred } : {},
+      ),
+    },
+  )
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(
+      err.detail || `Failed to star conversation: ${res.statusText}`,
+    )
+  }
+  return res.json()
+}
+
+export async function shareConversation(
+  conversationId: string,
+): Promise<{
+  conversation_id: string
+  share_id: string
+  is_shared: boolean
+  shared_at: string
+}> {
+  const res = await requestWithFallback(
+    `/api/conversations/${encodeURIComponent(conversationId)}/share`,
+    {
+      method: "POST",
+    },
+  )
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(
+      err.detail || `Failed to share conversation: ${res.statusText}`,
+    )
+  }
+  return res.json()
+}
+
+export async function unshareConversation(
+  conversationId: string,
+): Promise<void> {
+  const res = await requestWithFallback(
+    `/api/conversations/${encodeURIComponent(conversationId)}/share`,
+    {
+      method: "DELETE",
+    },
+  )
+  if (!res.ok) {
+    throw new Error(`Failed to revoke share: ${res.statusText}`)
+  }
+}
+
+export async function fetchSharedConversation(
+  shareId: string,
+): Promise<ConversationItem> {
+  const res = await requestWithFallback(
+    `/api/share/${encodeURIComponent(shareId)}`,
+  )
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(
+      err.detail || `Failed to load shared conversation: ${res.statusText}`,
     )
   }
   return res.json()

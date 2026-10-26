@@ -8,14 +8,24 @@ import {
   deleteConversation,
   fetchConversationDetails,
   fetchConversations,
+  fetchSharedConversation,
   removeDocument,
   sendChatMessage,
+  shareConversation,
+  toggleStarConversation,
   uploadDocument,
 } from "./api"
 
-type IconName = "arrow" | "check" | "chevron" | "clock" | "compass" | "file" | "grid" | "home" | "menu" | "mic" | "plus" | "search" | "share" | "sparkles" | "star" | "templates" | "trash" | "upload" | "x"
+type IconName = "arrow" | "check" | "chevron" | "clock" | "compass" | "dots" | "file" | "grid" | "home" | "menu" | "mic" | "plus" | "search" | "share" | "sparkles" | "star" | "templates" | "trash" | "upload" | "x"
 
 const paths: Record<IconName, ReactNode> = {
+  dots: (
+    <>
+      <circle cx="12" cy="5" r="1.5" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="19" r="1.5" fill="currentColor" stroke="none" />
+    </>
+  ),
   arrow: <path d="M5 12h14m-5-5 5 5-5 5" />,
   check: <path d="m20 6-11 11-5-5" />,
   chevron: <path d="m8 10 4 4 4-4" />,
@@ -109,7 +119,12 @@ const paths: Record<IconName, ReactNode> = {
   x: <path d="m18 6-12 12M6 6l12 12" />,
 }
 
-function Icon({ name, size = 16 }: { name: IconName; size?: number }) {
+type IconProps = {
+  name: IconName
+  size?: number
+}
+
+function Icon({ name, size = 16 }: IconProps) {
   return (
     <svg
       aria-hidden="true"
@@ -142,7 +157,6 @@ function BrandMark() {
 
 const projects = [
   ["clock", "Recent"],
-  ["grid", "All Projects"],
   ["star", "Starred"],
   ["share", "Shared with me"],
 ] as const
@@ -172,8 +186,34 @@ export default function App() {
   const [isUploading, setIsUploading] = useState(false)
   const [isGenerating, setIsGenerating] = useState(false)
   const [recentExpanded, setRecentExpanded] = useState(true)
+  const [starredExpanded, setStarredExpanded] = useState(true)
+  const [sharedExpanded, setSharedExpanded] = useState(false)
   const [searchQuery, setSearchQuery] = useState("")
   const [searchActive, setSearchActive] = useState(false)
+
+  // Three-dot dropdown menu state
+  const [menuTarget, setMenuTarget] = useState<{
+    conversation: ConversationItem
+    coords: {
+      top: number
+      right: number
+    }
+  } | null>(null)
+
+  // Share Dialog state
+  const [shareDialogConv, setShareDialogConv] =
+    useState<ConversationItem | null>(null)
+  const [shareLink, setShareLink] = useState("")
+  const [copiedLink, setCopiedLink] = useState(false)
+  const [isSharing, setIsSharing] = useState(false)
+
+  // Delete Confirmation Dialog state
+  const [deleteConfirmConv, setDeleteConfirmConv] =
+    useState<ConversationItem | null>(null)
+  const [isDeleting, setIsDeleting] = useState(false)
+
+  // Shared View Mode (when opened via share link)
+  const [isSharedView, setIsSharedView] = useState(false)
 
   // Notification Toast
   const [toast, setToast] = useState<{
@@ -193,6 +233,60 @@ export default function App() {
   // Load conversations list on mount
   useEffect(() => {
     loadConversations()
+  }, [])
+
+  // Check URL params for share identifier on mount
+  useEffect(() => {
+    async function checkShareParam() {
+      const urlParams = new URLSearchParams(window.location.search)
+      const shareId = urlParams.get("share")
+      if (shareId) {
+        try {
+          showToast("Loading shared conversation...", "info")
+          const sharedConv = await fetchSharedConversation(shareId)
+          setActiveConversationId(sharedConv.conversation_id)
+          setActiveConversationTitle(sharedConv.title || "Shared Conversation")
+          setMessages(sharedConv.messages || [])
+          if (sharedConv.documents && sharedConv.documents.length > 0) {
+            setCurrentDocument(
+              sharedConv.documents[sharedConv.documents.length - 1],
+            )
+          } else {
+            setCurrentDocument(null)
+          }
+          setIsSharedView(true)
+          showToast("Loaded shared conversation", "success")
+        } catch (err: any) {
+          showToast(
+            err.message || "Shared conversation not found or access revoked",
+            "error",
+          )
+        }
+      }
+    }
+    checkShareParam()
+  }, [])
+
+  // Dismiss menu and modals on outside click, scroll, or Escape key
+  useEffect(() => {
+    function handleGlobalClose(e: MouseEvent | KeyboardEvent) {
+      if (e instanceof KeyboardEvent && e.key === "Escape") {
+        setMenuTarget(null)
+        setShareDialogConv(null)
+        setDeleteConfirmConv(null)
+        return
+      }
+      setMenuTarget(null)
+    }
+
+    window.addEventListener("mousedown", handleGlobalClose)
+    window.addEventListener("scroll", handleGlobalClose, true)
+    window.addEventListener("keydown", handleGlobalClose)
+    return () => {
+      window.removeEventListener("mousedown", handleGlobalClose)
+      window.removeEventListener("scroll", handleGlobalClose, true)
+      window.removeEventListener("keydown", handleGlobalClose)
+    }
   }, [])
 
   // Dismiss upload menu on outside click
@@ -236,6 +330,7 @@ export default function App() {
     setActiveConversationTitle("New Conversation")
     setMessages([])
     setCurrentDocument(null)
+    setIsSharedView(false)
     setMobileOpen(false)
   }
 
@@ -243,6 +338,7 @@ export default function App() {
     try {
       setActiveConversationId(conv.conversation_id)
       setActiveConversationTitle(conv.title || "Conversation")
+      setIsSharedView(false)
       setMobileOpen(false)
 
       const details = await fetchConversationDetails(conv.conversation_id)
@@ -258,22 +354,158 @@ export default function App() {
     }
   }
 
-  async function handleDeleteConversation(
-    event: React.MouseEvent,
-    cid: string,
-  ) {
+  function handleOpenMenu(event: React.MouseEvent, conv: ConversationItem) {
     event.stopPropagation()
+    const target = event.currentTarget as HTMLElement
+    const rect = target.getBoundingClientRect()
+    const right = Math.max(8, window.innerWidth - rect.right)
+    const top = rect.bottom + 4
+    setMenuTarget({
+      conversation: conv,
+      coords: { top, right },
+    })
+  }
+
+  async function handleToggleStar(conv: ConversationItem) {
+    setMenuTarget(null)
+    const targetState = !conv.is_starred
+
+    // Optimistically update conversations state
+    setConversations((prev) =>
+      prev.map((c) =>
+        c.conversation_id === conv.conversation_id
+          ? { ...c, is_starred: targetState }
+          : c,
+      ),
+    )
+
+    try {
+      await toggleStarConversation(conv.conversation_id, targetState)
+      showToast(
+        targetState ? "Conversation starred" : "Conversation unstarred",
+        "success",
+      )
+    } catch (err: any) {
+      // Revert on error
+      setConversations((prev) =>
+        prev.map((c) =>
+          c.conversation_id === conv.conversation_id
+            ? { ...c, is_starred: !targetState }
+            : c,
+        ),
+      )
+      showToast(err.message || "Failed to update star status", "error")
+    }
+  }
+
+  async function handleOpenShareDialog(conv: ConversationItem) {
+    setMenuTarget(null)
+    setShareDialogConv(conv)
+    setCopiedLink(false)
+
+    try {
+      setIsSharing(true)
+      const res = await shareConversation(conv.conversation_id)
+      const sid = res.share_id
+      setConversations((prev) =>
+        prev.map((c) =>
+          c.conversation_id === conv.conversation_id
+            ? { ...c, is_shared: true, share_id: sid }
+            : c,
+        ),
+      )
+      const url = `${window.location.origin}/?share=${sid}`
+      setShareLink(url)
+    } catch (err: any) {
+      showToast(err.message || "Failed to generate share link", "error")
+    } finally {
+      setIsSharing(false)
+    }
+  }
+
+  function handleCopyShareLink() {
+    if (!shareLink) return
+    navigator.clipboard
+      .writeText(shareLink)
+      .then(() => {
+        setCopiedLink(true)
+        showToast("Link copied to clipboard", "success")
+        setTimeout(() => setCopiedLink(false), 2500)
+      })
+      .catch(() => {
+        showToast("Failed to copy link to clipboard", "error")
+      })
+  }
+
+  function handleOpenDeleteDialog(conv: ConversationItem) {
+    setMenuTarget(null)
+    setDeleteConfirmConv(conv)
+  }
+
+  async function handleConfirmDelete() {
+    if (!deleteConfirmConv) return
+    const cid = deleteConfirmConv.conversation_id
+    setIsDeleting(true)
     try {
       await deleteConversation(cid)
       setConversations((prev) => prev.filter((c) => c.conversation_id !== cid))
-
       if (activeConversationId === cid) {
         startNewChat()
       }
-      showToast("Conversation deleted", "info")
+      setDeleteConfirmConv(null)
+      showToast("Conversation deleted", "success")
     } catch (err: any) {
       showToast(err.message || "Failed to delete conversation", "error")
+    } finally {
+      setIsDeleting(false)
     }
+  }
+
+  function renderConversationItem(c: ConversationItem) {
+    const isActive = activeConversationId === c.conversation_id
+    const hasDoc = c.documents && c.documents.length > 0
+    const isMenuOpen =
+      menuTarget?.conversation.conversation_id === c.conversation_id
+
+    return (
+      <div
+        className={`recent-item ${isActive ? "active" : ""}`}
+        key={c.conversation_id}
+        onClick={() => {
+          setIsSharedView(false)
+          openConversation(c)
+        }}
+        title={c.title}
+      >
+        <div className="recent-item-title">
+          <Icon name={hasDoc ? "file" : "sparkles"} size={12} />
+          <span>{c.title}</span>
+        </div>
+
+        <div
+          className="recent-item-actions"
+          onClick={(e) => e.stopPropagation()}
+        >
+          {c.is_starred && (
+            <span className="convo-star-icon" title="Starred conversation">
+              <Icon name="star" size={11} />
+            </span>
+          )}
+
+          <button
+            aria-expanded={isMenuOpen}
+            aria-haspopup="true"
+            aria-label={`Options for ${c.title}`}
+            className={`three-dots-btn ${isMenuOpen ? "menu-open" : ""}`}
+            onClick={(e) => handleOpenMenu(e, c)}
+            title="More options"
+            type="button"
+          >
+            <Icon name="dots" size={13} />
+          </button>
+        </div>
+      </div>
+    )
   }
 
   function triggerFilePicker() {
@@ -403,11 +635,26 @@ export default function App() {
     }
   }
 
-  const filteredConversations = searchQuery.trim()
+  const starredConversations = conversations.filter((c) => !!c.is_starred)
+  const sharedConversations = conversations.filter((c) => !!c.is_shared)
+
+  const filteredRecent = searchQuery.trim()
     ? conversations.filter((c) =>
         c.title.toLowerCase().includes(searchQuery.toLowerCase().trim()),
       )
     : conversations
+
+  const filteredStarred = searchQuery.trim()
+    ? starredConversations.filter((c) =>
+        c.title.toLowerCase().includes(searchQuery.toLowerCase().trim()),
+      )
+    : starredConversations
+
+  const filteredShared = searchQuery.trim()
+    ? sharedConversations.filter((c) =>
+        c.title.toLowerCase().includes(searchQuery.toLowerCase().trim()),
+      )
+    : sharedConversations
 
   return (
     <div className="app-shell">
@@ -444,7 +691,7 @@ export default function App() {
           <span>IntelliAssist AI</span>
         </div>
 
-        <div className="avatar">AK</div>
+        <div className="avatar">PB</div>
       </header>
 
       {mobileOpen && (
@@ -506,7 +753,7 @@ export default function App() {
                     border: "1px solid #36363d",
                     borderRadius: "6px",
                     color: "#fff",
-                    fontSize: "11px",
+                    fontSize: "12px",
                     padding: "4px 8px",
                     outline: "none",
                   }}
@@ -518,7 +765,7 @@ export default function App() {
 
           <p className="nav-label">Projects</p>
 
-          {/* Functional Recent Section */}
+          {/* 1. Recent Section */}
           <button
             className="nav-item"
             onClick={() => setRecentExpanded(!recentExpanded)}
@@ -542,58 +789,89 @@ export default function App() {
 
           {recentExpanded && (
             <div className="recent-list">
-              {filteredConversations.length === 0 ? (
+              {filteredRecent.length === 0 ? (
                 <div className="recent-empty-label">
                   {searchQuery
                     ? "No matching conversations"
                     : "No recent chats yet"}
                 </div>
               ) : (
-                filteredConversations.map((c) => {
-                  const isActive = activeConversationId === c.conversation_id
-                  const hasDoc = c.documents && c.documents.length > 0
-                  return (
-                    <div
-                      className={`recent-item ${isActive ? "active" : ""}`}
-                      key={c.conversation_id}
-                      onClick={() => openConversation(c)}
-                      title={c.title}
-                    >
-                      <div className="recent-item-title">
-                        <Icon name={hasDoc ? "file" : "sparkles"} size={12} />
-                        <span>{c.title}</span>
-                      </div>
-
-                      <button
-                        aria-label="Delete conversation"
-                        className="recent-item-delete"
-                        onClick={(e) =>
-                          handleDeleteConversation(e, c.conversation_id)
-                        }
-                        title="Delete conversation"
-                      >
-                        <Icon name="trash" size={11} />
-                      </button>
-                    </div>
-                  )
-                })
+                filteredRecent.map(renderConversationItem)
               )}
             </div>
           )}
 
-          {/* Remaining Projects Items */}
-          {projects
-            .filter(([_, label]) => label !== "Recent")
-            .map(([icon, label]) => (
-              <a
-                className="nav-item"
-                href={`#${label.toLowerCase().replaceAll(" ", "-")}`}
-                key={label}
-              >
-                <Icon name={icon} size={14} />
-                {label}
-              </a>
-            ))}
+          {/* 2. Starred Section */}
+          <button
+            className="nav-item"
+            onClick={() => setStarredExpanded(!starredExpanded)}
+            style={{ width: "100%", justifyContent: "space-between" }}
+          >
+            <span
+              style={{ display: "flex", alignItems: "center", gap: "10px" }}
+            >
+              <Icon name="star" size={14} />
+              Starred
+            </span>
+            <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+              {starredConversations.length > 0 && (
+                <span className="recent-badge-count">
+                  {starredConversations.length}
+                </span>
+              )}
+              <Icon name="chevron" size={12} />
+            </span>
+          </button>
+
+          {starredExpanded && (
+            <div className="recent-list">
+              {filteredStarred.length === 0 ? (
+                <div className="recent-empty-label">
+                  No starred conversations yet.
+                  <br />
+                  Star a conversation to find it here.
+                </div>
+              ) : (
+                filteredStarred.map(renderConversationItem)
+              )}
+            </div>
+          )}
+
+          {/* 3. Shared with me Section */}
+          <button
+            className="nav-item"
+            onClick={() => setSharedExpanded(!sharedExpanded)}
+            style={{ width: "100%", justifyContent: "space-between" }}
+          >
+            <span
+              style={{ display: "flex", alignItems: "center", gap: "10px" }}
+            >
+              <Icon name="share" size={14} />
+              Shared with me
+            </span>
+            <span style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+              {sharedConversations.length > 0 && (
+                <span className="recent-badge-count">
+                  {sharedConversations.length}
+                </span>
+              )}
+              <Icon name="chevron" size={12} />
+            </span>
+          </button>
+
+          {sharedExpanded && (
+            <div className="recent-list">
+              {filteredShared.length === 0 ? (
+                <div className="recent-empty-label">
+                  No shared conversations yet.
+                  <br />
+                  Share a conversation to see it here.
+                </div>
+              ) : (
+                filteredShared.map(renderConversationItem)
+              )}
+            </div>
+          )}
 
           <p className="nav-label">Resources</p>
 
@@ -611,10 +889,10 @@ export default function App() {
 
         <div className="sidebar-footer">
           <button className="profile-row">
-            <span className="avatar">AK</span>
+            <span className="avatar">PB</span>
 
             <span className="profile-copy">
-              <strong>Alex Kim</strong>
+              <strong>Purvi Bheda</strong>
               <small>Free plan</small>
             </span>
 
@@ -625,6 +903,32 @@ export default function App() {
 
       <main className="workspace" id="home">
         <div className="aurora" />
+
+        {/* Read-only shared view top banner */}
+        {isSharedView && (
+          <div className="shared-view-banner">
+            <span>
+              Viewing shared conversation:{" "}
+              <strong>{activeConversationTitle}</strong> (Read-only)
+            </span>
+            <button
+              className="btn-secondary"
+              onClick={() => {
+                setIsSharedView(false)
+                startNewChat()
+                window.history.replaceState(
+                  {},
+                  document.title,
+                  window.location.pathname,
+                )
+              }}
+              style={{ padding: "3px 8px", fontSize: "12px" }}
+              type="button"
+            >
+              Back to my chats
+            </button>
+          </div>
+        )}
 
         {/* Mode A: Welcome Screen (When no messages in current thread) */}
         {messages.length === 0 ? (
@@ -1056,6 +1360,192 @@ export default function App() {
           </div>
         )}
       </main>
+
+      {/* Floating Three-dot Dropdown Menu */}
+      {menuTarget && (
+        <div
+          aria-label="Conversation options"
+          className="convo-dropdown-menu"
+          onMouseDown={(e) => e.stopPropagation()}
+          role="menu"
+          style={{
+            top: menuTarget.coords.top,
+            right: menuTarget.coords.right,
+          }}
+        >
+          <button
+            className="dropdown-item"
+            onClick={() => handleToggleStar(menuTarget.conversation)}
+            role="menuitem"
+            type="button"
+          >
+            <Icon name="star" size={13} />
+            <span>
+              {menuTarget.conversation.is_starred ? "Unstar" : "Star"}
+            </span>
+          </button>
+
+          <button
+            className="dropdown-item"
+            onClick={() => handleOpenShareDialog(menuTarget.conversation)}
+            role="menuitem"
+            type="button"
+          >
+            <Icon name="share" size={13} />
+            <span>Share</span>
+          </button>
+
+          <button
+            className="dropdown-item danger"
+            onClick={() => handleOpenDeleteDialog(menuTarget.conversation)}
+            role="menuitem"
+            type="button"
+          >
+            <Icon name="trash" size={13} />
+            <span>Delete</span>
+          </button>
+        </div>
+      )}
+
+      {/* Share Conversation Modal Dialog */}
+      {shareDialogConv && (
+        <div
+          aria-labelledby="share-dialog-title"
+          aria-modal="true"
+          className="modal-overlay"
+          onClick={() => setShareDialogConv(null)}
+          role="dialog"
+        >
+          <div className="modal-dialog" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2 className="modal-title" id="share-dialog-title">
+                Share conversation
+              </h2>
+              <button
+                aria-label="Close"
+                className="modal-close-btn"
+                onClick={() => setShareDialogConv(null)}
+                type="button"
+              >
+                <Icon name="x" size={14} />
+              </button>
+            </div>
+
+            <div className="share-conv-title">{shareDialogConv.title}</div>
+
+            <p
+              style={{
+                fontSize: "12px",
+                color: "#9ca3af",
+                marginBottom: "12px",
+                lineHeight: "1.4",
+              }}
+            >
+              Anyone with this link can view this conversation and its citations
+              in read-only mode.
+            </p>
+
+            <div className="share-link-box">
+              <input
+                aria-label="Shareable link"
+                className="share-link-input"
+                readOnly
+                value={shareLink || "Generating link..."}
+              />
+              <button
+                className={`share-copy-btn ${copiedLink ? "copied" : ""}`}
+                disabled={!shareLink || isSharing}
+                onClick={handleCopyShareLink}
+                type="button"
+              >
+                {copiedLink ? (
+                  <>
+                    <Icon name="check" size={13} />
+                    <span>Copied</span>
+                  </>
+                ) : (
+                  <>
+                    <Icon name="share" size={13} />
+                    <span>Copy link</span>
+                  </>
+                )}
+              </button>
+            </div>
+
+            <div className="modal-footer">
+              <button
+                className="btn-secondary"
+                onClick={() => setShareDialogConv(null)}
+                type="button"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Confirmation Modal Dialog */}
+      {deleteConfirmConv && (
+        <div
+          aria-labelledby="delete-dialog-title"
+          aria-modal="true"
+          className="modal-overlay"
+          onClick={() => !isDeleting && setDeleteConfirmConv(null)}
+          role="dialog"
+        >
+          <div
+            className="modal-dialog"
+            onClick={(e) => e.stopPropagation()}
+            style={{ maxWidth: 390 }}
+          >
+            <div className="modal-header">
+              <h2 className="modal-title" id="delete-dialog-title">
+                Delete conversation?
+              </h2>
+              <button
+                aria-label="Close"
+                className="modal-close-btn"
+                disabled={isDeleting}
+                onClick={() => setDeleteConfirmConv(null)}
+                type="button"
+              >
+                <Icon name="x" size={14} />
+              </button>
+            </div>
+
+            <p
+              style={{
+                fontSize: "13.5px",
+                color: "#a1a1aa",
+                margin: "4px 0 16px",
+                lineHeight: "1.5",
+              }}
+            >
+              This conversation and its chat history will be deleted.
+            </p>
+
+            <div className="modal-footer">
+              <button
+                className="btn-secondary"
+                disabled={isDeleting}
+                onClick={() => setDeleteConfirmConv(null)}
+                type="button"
+              >
+                Cancel
+              </button>
+              <button
+                className="btn-danger"
+                disabled={isDeleting}
+                onClick={handleConfirmDelete}
+                type="button"
+              >
+                {isDeleting ? "Deleting..." : "Delete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
