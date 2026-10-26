@@ -1,0 +1,29 @@
+How to Run the Project Manually (Step-by-Step)
+If you ever restart your system or want to run both services in separate terminal windows:
+
+Step 1: Start the Backend (Terminal 1)
+Open a PowerShell terminal and run:
+
+powershell
+cd "d:\IntelliAssist AI\backend"
+.\.venv\Scripts\Activate.ps1
+python server.py
+Note: The backend server will start on http://0.0.0.0:8000. It will load your Gemini API key from backend/.env, initialize the FAISS vector index, and connect to SQLite chat history.
+
+Step 2: Start the Frontend (Terminal 2)
+Open a second PowerShell terminal and run:
+
+powershell
+cd "d:\IntelliAssist AI\frontend"
+npm run dev
+Note: The Vite dev server will start on http://localhost:8443. It automatically proxies /api requests to http://127.0.0.1:8000.
+
+3. If Port 8443 or 8000 Is Busy
+If you want to free the ports to run the commands directly in your own terminal window:
+
+powershell
+# Stop any processes using port 8443 (Frontend)
+Get-Process -Id (Get-NetTCPConnection -LocalPort 8443).OwningProcess -ErrorAction SilentlyContinue | Stop-Process -Force
+# Stop any processes using port 8000 (Backend)
+Get-Process -Id (Get-NetTCPConnection -LocalPort 8000).OwningProcess -ErrorAction SilentlyContinue | Stop-Process -Force
+Then re-run python server.py and npm run dev.

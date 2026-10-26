@@ -157,6 +157,24 @@ class ConversationStore:
         CREATE INDEX IF NOT EXISTS idx_conversations_updated
             ON conversations(updated_at DESC);
         """,
+        """
+        CREATE TABLE IF NOT EXISTS conversation_documents (
+            document_id TEXT PRIMARY KEY,
+            conversation_id TEXT NOT NULL,
+            filename TEXT NOT NULL,
+            file_type TEXT NOT NULL,
+            total_pages INTEGER NOT NULL,
+            total_characters INTEGER NOT NULL,
+            chunk_count INTEGER NOT NULL,
+            file_path TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id) ON DELETE CASCADE
+        );
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_documents_conversation
+            ON conversation_documents(conversation_id, created_at ASC);
+        """,
     ]
 
     def __init__(self, db_path: Optional[Union[str, Path]] = None) -> None:
@@ -349,6 +367,7 @@ class ConversationStore:
                 "created_at": row["created_at"],
                 "updated_at": row["updated_at"],
                 "message_count": int(row["message_count"]),
+                "documents": self.get_documents(conversation_id),
             }
 
     def list_conversations(self, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
@@ -392,6 +411,7 @@ class ConversationStore:
                     "created_at": row["created_at"],
                     "updated_at": row["updated_at"],
                     "message_count": int(row["message_count"]),
+                    "documents": self.get_documents(row["conversation_id"]),
                 }
                 for row in rows
             ]
@@ -680,3 +700,106 @@ class ConversationStore:
 
         conv["messages"] = self.get_messages(conversation_id)
         return conv
+
+    # ========================================================================
+    # Document Operations
+    # ========================================================================
+
+    def add_document(
+        self,
+        conversation_id: str,
+        filename: str,
+        file_type: str,
+        total_pages: int = 1,
+        total_characters: int = 0,
+        chunk_count: int = 0,
+        file_path: str = "",
+        document_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Associate an uploaded document record with a conversation."""
+        doc_id = (
+            document_id.strip()
+            if isinstance(document_id, str) and document_id.strip()
+            else str(uuid.uuid4())
+        )
+        now = utcnow_iso()
+
+        with self._get_connection() as conn:
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO conversation_documents 
+                    (document_id, conversation_id, filename, file_type, total_pages, total_characters, chunk_count, file_path, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    """,
+                    (
+                        doc_id,
+                        conversation_id,
+                        filename,
+                        file_type,
+                        total_pages,
+                        total_characters,
+                        chunk_count,
+                        file_path,
+                        now,
+                    ),
+                )
+                conn.execute(
+                    "UPDATE conversations SET updated_at = ? WHERE conversation_id = ?;",
+                    (now, conversation_id),
+                )
+
+        return {
+            "document_id": doc_id,
+            "conversation_id": conversation_id,
+            "filename": filename,
+            "file_type": file_type,
+            "total_pages": total_pages,
+            "total_characters": total_characters,
+            "chunk_count": chunk_count,
+            "file_path": file_path,
+            "created_at": now,
+        }
+
+    def get_documents(self, conversation_id: str) -> List[Dict[str, Any]]:
+        """Retrieve all documents associated with a conversation."""
+        if not conversation_id or not isinstance(conversation_id, str):
+            return []
+
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                SELECT document_id, conversation_id, filename, file_type, total_pages, total_characters, chunk_count, file_path, created_at
+                FROM conversation_documents
+                WHERE conversation_id = ?
+                ORDER BY created_at ASC;
+                """,
+                (conversation_id,),
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
+    def delete_document(self, conversation_id: str, document_id: str) -> bool:
+        """Remove an associated document record from a conversation."""
+        if not conversation_id or not document_id:
+            return False
+
+        with self._get_connection() as conn:
+            with conn:
+                cursor = conn.execute(
+                    "DELETE FROM conversation_documents WHERE conversation_id = ? AND document_id = ?;",
+                    (conversation_id, document_id),
+                )
+                return cursor.rowcount > 0
+
+    def get_all_documents(self) -> List[Dict[str, Any]]:
+        """Retrieve all documents across all conversations."""
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                SELECT document_id, conversation_id, filename, file_type, total_pages, total_characters, chunk_count, file_path, created_at
+                FROM conversation_documents
+                ORDER BY created_at ASC;
+                """
+            )
+            return [dict(row) for row in cursor.fetchall()]
+
