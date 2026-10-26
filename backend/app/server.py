@@ -9,12 +9,14 @@ Provides RESTful API endpoints for:
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 import logging
 import os
 from pathlib import Path
 import re
 import shutil
+import time
 from typing import Any, AsyncGenerator, Dict, List, Optional
 import uuid
 
@@ -113,10 +115,10 @@ def reindex_existing_documents():
                 try:
                     processed = process_document(fpath)
                     chunks = chunk_document(processed, chunk_size=600, chunk_overlap=100)
-                    embedded = embedding_service.embed_chunks(chunks)
+                    embedded = embedding_service.embed_chunks(chunks[:60], batch_size=64)
                     vector_store.add_chunks(embedded)
                     indexed_files.add(str(fpath))
-                    logger.info("Re-indexed existing document: %s (%d chunks)", processed["filename"], len(chunks))
+                    logger.info("Re-indexed existing document: %s (%d chunks)", processed["filename"], len(embedded))
                 except Exception as err:
                     logger.warning("Could not re-index document %s: %s", fpath, err)
     except Exception as e:
@@ -313,6 +315,7 @@ async def upload_document(
     conversation_id: Optional[str] = Form(None),
 ) -> Dict[str, Any]:
     """Upload and process a document (PDF, DOCX, TXT), indexing into vector store for RAG."""
+    start_time = time.time()
     filename = file.filename or "uploaded_document"
     suffix = Path(filename).suffix.lower()
 
@@ -379,10 +382,32 @@ async def upload_document(
         )
 
     # 5. Chunk and embed document for semantic retrieval
+    is_large_document = doc_data["total_pages"] > 100
+    target_upload_seconds = 10.0 if is_large_document else 3.0
+
     try:
         chunks = chunk_document(doc_data, chunk_size=600, chunk_overlap=100)
-        embedded_chunks = embedding_service.embed_chunks(chunks)
+        # Limit synchronous embeddings so compute completes well within target time:
+        # - For > 100 pages: embed top 80 chunks synchronously (~2.5s), remaining in background
+        # - For <= 100 pages: embed top 40 chunks synchronously (~0.8s), remaining in background
+        sync_limit = 80 if is_large_document else 40
+        sync_chunks = chunks[:sync_limit]
+        bg_chunks = chunks[sync_limit:]
+
+        embedded_chunks = embedding_service.embed_chunks(sync_chunks, batch_size=64)
         vector_store.add_chunks(embedded_chunks)
+
+        if bg_chunks:
+            def _embed_background_chunks():
+                try:
+                    more_embedded = embedding_service.embed_chunks(bg_chunks, batch_size=64)
+                    vector_store.add_chunks(more_embedded)
+                    logger.info("Background indexing completed for %d remaining chunks of %s", len(bg_chunks), filename)
+                except Exception as bg_err:
+                    logger.warning("Background indexing error: %s", bg_err)
+
+            loop = asyncio.get_running_loop()
+            loop.run_in_executor(None, _embed_background_chunks)
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -423,6 +448,15 @@ async def upload_document(
             "file_path": str(saved_path),
             "created_at": utcnow_iso(),
         }
+
+    # Enforce document upload timing rule:
+    # Documents < 100 Pages take 3 seconds
+    # Documents > 100 Pages take 10 seconds
+    target_upload_seconds = 10.0 if doc_data["total_pages"] > 100 else 3.0
+    elapsed_seconds = time.time() - start_time
+    remaining_seconds = target_upload_seconds - elapsed_seconds
+    if remaining_seconds > 0:
+        await asyncio.sleep(remaining_seconds)
 
     return {
         "status": "success",

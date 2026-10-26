@@ -89,8 +89,16 @@ const paths: Record<IconName, ReactNode> = {
   ),
   sparkles: (
     <>
-      <path d="m12 3 1.1 3.4L16.5 8l-3.4 1.3L12 13l-1.1-3.7L7.5 8l3.4-1.6L12 3Z" />
-      <path d="m18.5 13 .7 2.1 2.1.9-2.1.8-.7 2.2-.7-2.2-2.1-.8 2.1-.9.7-2.1Z" />
+      <path
+        d="M 10.5 2 Q 10.5 9.5 17.5 9.5 Q 10.5 9.5 10.5 17 Q 10.5 9.5 3.5 9.5 Q 10.5 9.5 10.5 2 Z"
+        fill="currentColor"
+        stroke="none"
+      />
+      <path
+        d="M 18 12 Q 18 16 22 16 Q 18 16 18 20 Q 18 16 14 16 Q 18 16 18 12 Z"
+        fill="currentColor"
+        stroke="none"
+      />
     </>
   ),
   star: (
@@ -145,12 +153,26 @@ function Icon({ name, size = 16 }: IconProps) {
   )
 }
 
-function BrandMark() {
+function BrandMark({ size = 22, rounded = 6 }: { size?: number; rounded?: number }) {
   return (
-    <div className="brand-mark" aria-hidden="true">
-      <span />
-      <span />
-      <span />
+    <div
+      className="brand-mark"
+      style={{
+        width: size,
+        height: size,
+        borderRadius: rounded,
+      }}
+      aria-hidden="true"
+    >
+      <svg
+        viewBox="0 0 24 24"
+        width={size * 0.75}
+        height={size * 0.75}
+        fill="white"
+      >
+        <path d="M 10.5 2 Q 10.5 9.5 17.5 9.5 Q 10.5 9.5 10.5 17 Q 10.5 9.5 3.5 9.5 Q 10.5 9.5 10.5 2 Z" />
+        <path d="M 18 12 Q 18 16 22 16 Q 18 16 18 20 Q 18 16 14 16 Q 18 16 18 12 Z" />
+      </svg>
     </div>
   )
 }
@@ -159,10 +181,54 @@ function formatConversationTitle(rawTitle: string): string {
   if (!rawTitle) return "Conversation"
   return (
     rawTitle
+      .replace(/^Doc:\s*/i, "")
       .replace(/^[\s📄📑📁⭐*•\-]+\s*/gu, "")
+      .replace(/^Doc:\s*/i, "")
       .replace(/\s*⭐+\s*$/gu, "")
       .trim() || rawTitle
   )
+}
+
+function formatDisplayAssistantText(
+  content: string,
+  messageIndex: number,
+  allMessages: ChatMessage[],
+  hasDocument: boolean,
+): string {
+  if (!content) return ""
+  if (!hasDocument) return content
+
+  // Count preceding assistant messages in this conversation
+  let priorAssistantCount = 0
+  for (let i = 0; i < messageIndex; i++) {
+    if (allMessages[i].role === "assistant") {
+      priorAssistantCount++
+    }
+  }
+
+  const prefixPattern =
+    /^(?:Based on\s+(?:the\s+)?(?:provided\s+|retrieved\s+)?(?:documents?|context)[,:\s]*)/i
+  const cleaned = content.replace(prefixPattern, "").trim()
+
+  if (priorAssistantCount === 0) {
+    if (cleaned) {
+      const firstChar = cleaned[0]
+      const lower =
+        cleaned.length > 1 &&
+        firstChar === firstChar.toUpperCase() &&
+        cleaned[1] === cleaned[1].toLowerCase() &&
+        !cleaned.startsWith("I ")
+          ? firstChar.toLowerCase() + cleaned.slice(1)
+          : cleaned
+      return `Based on provided documents, ${lower}`
+    }
+    return "Based on provided documents."
+  } else {
+    if (cleaned) {
+      return cleaned[0].toUpperCase() + cleaned.slice(1)
+    }
+    return content
+  }
 }
 
 export default function App() {
@@ -183,6 +249,9 @@ export default function App() {
   // Upload & Async States
   const [uploadMenuOpen, setUploadMenuOpen] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
+  const [uploadFileName, setUploadFileName] = useState<string | null>(null)
+  const [uploadSecondsElapsed, setUploadSecondsElapsed] = useState<number>(0)
+  const [uploadTargetSeconds, setUploadTargetSeconds] = useState<number>(3)
   const [isGenerating, setIsGenerating] = useState(false)
   const [recentExpanded, setRecentExpanded] = useState(true)
   const [starredExpanded, setStarredExpanded] = useState(true)
@@ -522,23 +591,51 @@ export default function App() {
       return
     }
 
+    const isLikelyLarge =
+      file.name.toLowerCase().endsWith(".pdf") &&
+      file.size > 1.8 * 1024 * 1024
+    const initialTargetSeconds = isLikelyLarge ? 10 : 3
+
+    const uploadStartTime = Date.now()
     setIsUploading(true)
-    showToast(`Uploading and processing "${file.name}"...`, "info")
+    setUploadFileName(file.name)
+    setUploadSecondsElapsed(0)
+    setUploadTargetSeconds(initialTargetSeconds)
+    showToast(
+      `Uploading "${file.name}" (${initialTargetSeconds === 10 ? "> 100 pages, ~10s" : "< 100 pages, ~3s"})...`,
+      "info",
+    )
+
+    const timer = setInterval(() => {
+      setUploadSecondsElapsed((prev) => prev + 1)
+    }, 1000)
 
     try {
       // If we don't have an active conversation, create one first or pass undefined
       let targetConvId = activeConversationId
       if (!targetConvId) {
-        const newConv = await createConversation(`Doc: ${file.name}`)
+        const newConv = await createConversation(file.name)
         targetConvId = newConv.conversation_id
         setActiveConversationId(targetConvId)
-        setActiveConversationTitle(newConv.title)
+        setActiveConversationTitle(formatConversationTitle(newConv.title))
       }
 
       const res = await uploadDocument(file, targetConvId)
+
+      // Timing rule: Documents < 100 pages take 3 seconds, > 100 pages take 10 seconds
+      const totalPages = res.document?.total_pages || 1
+      const targetDurationMs = totalPages > 100 ? 10000 : 3000
+      setUploadTargetSeconds(totalPages > 100 ? 10 : 3)
+
+      const elapsed = Date.now() - uploadStartTime
+      const remainingMs = targetDurationMs - elapsed
+      if (remainingMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, remainingMs))
+      }
+
       setCurrentDocument(res.document)
       showToast(
-        `Ready: "${res.document.filename}" is indexed for Q&A.`,
+        `Ready: "${res.document.filename}" (${totalPages} ${totalPages === 1 ? "page" : "pages"}) is indexed for Q&A.`,
         "success",
       )
       await loadConversations()
@@ -548,7 +645,9 @@ export default function App() {
         "error",
       )
     } finally {
+      clearInterval(timer)
       setIsUploading(false)
+      setUploadFileName(null)
     }
   }
 
@@ -701,7 +800,15 @@ export default function App() {
           title="Start a new conversation"
         >
           <span className="workspace-icon">
-            <Icon name="sparkles" size={13} />
+            <svg
+              viewBox="0 0 24 24"
+              width={15}
+              height={15}
+              fill="white"
+            >
+              <path d="M 10.5 2 Q 10.5 9.5 17.5 9.5 Q 10.5 9.5 10.5 17 Q 10.5 9.5 3.5 9.5 Q 10.5 9.5 10.5 2 Z" />
+              <path d="M 18 12 Q 18 16 22 16 Q 18 16 18 20 Q 18 16 14 16 Q 18 16 18 12 Z" />
+            </svg>
           </span>
 
           <span>IntelliAssist AI</span>
@@ -968,7 +1075,13 @@ export default function App() {
                   <div className="composer-doc-left">
                     <span className="spinner" />
                     <span className="doc-name">
-                      Processing and indexing document...
+                      {uploadFileName || "Document"}
+                    </span>
+                    <span className="doc-meta">
+                      Uploading & indexing ({Math.min(uploadSecondsElapsed, uploadTargetSeconds)}s / {uploadTargetSeconds}s)...
+                    </span>
+                    <span className="doc-status-processing">
+                      Processing
                     </span>
                   </div>
                 </div>
@@ -1102,15 +1215,18 @@ export default function App() {
                       <div className="assistant-bubble">
                         {/* Model / Grounding Badge */}
                         <div className="model-tag">
-                          <span>
-                            {msg.metadata?.is_live_llm
-                              ? "Gemini 3.6 Flash"
-                              : "IntelliAssist Grounded RAG"}
-                          </span>
+                          <span>IntelliAssist</span>
                         </div>
 
                         {/* Message Content */}
-                        <div className="assistant-text">{msg.content}</div>
+                        <div className="assistant-text">
+                          {formatDisplayAssistantText(
+                            msg.content,
+                            index,
+                            messages,
+                            !!currentDocument,
+                          )}
+                        </div>
 
                         {/* Insufficient context banner */}
                         {msg.metadata?.sufficient_context === false && (
@@ -1149,6 +1265,60 @@ export default function App() {
                         <span>
                           Searching documents and generating grounded answer...
                         </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Document upload progress inside active chat messages */}
+              {isUploading && (
+                <div className="message-row assistant-row">
+                  <div className="assistant-bubble-container">
+                    <div className="assistant-avatar">
+                      <Icon name="sparkles" size={15} />
+                    </div>
+
+                    <div
+                      className="assistant-bubble"
+                      style={{ padding: "12px 16px" }}
+                    >
+                      <div className="model-tag">
+                        <span>IntelliAssist</span>
+                      </div>
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "12px",
+                          marginTop: "6px",
+                        }}
+                      >
+                        <span className="spinner" />
+                        <div>
+                          <div
+                            style={{
+                              fontWeight: 600,
+                              fontSize: "14px",
+                              color: "var(--text-primary, #ffffff)",
+                            }}
+                          >
+                            Uploading & Indexing {uploadFileName || "Document"}
+                          </div>
+                          <div
+                            style={{
+                              fontSize: "12px",
+                              color: "var(--text-secondary, #94a3b8)",
+                              marginTop: "2px",
+                            }}
+                          >
+                            {uploadTargetSeconds === 10
+                              ? "Document (> 100 pages)"
+                              : "Document (< 100 pages)"}{" "}
+                            • {Math.min(uploadSecondsElapsed, uploadTargetSeconds)}s /{" "}
+                            {uploadTargetSeconds}s
+                          </div>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -1206,7 +1376,13 @@ export default function App() {
                     <div className="composer-doc-left">
                       <span className="spinner" />
                       <span className="doc-name">
-                        Processing and indexing document...
+                        {uploadFileName || "Document"}
+                      </span>
+                      <span className="doc-meta">
+                        Uploading & indexing ({Math.min(uploadSecondsElapsed, uploadTargetSeconds)}s / {uploadTargetSeconds}s)...
+                      </span>
+                      <span className="doc-status-processing">
+                        Processing
                       </span>
                     </div>
                   </div>

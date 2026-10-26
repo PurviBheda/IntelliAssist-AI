@@ -16,6 +16,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 import os
 from pathlib import Path
+import re
 from typing import Any, Dict, List, Optional, Union
 
 from app.conversation_store import (
@@ -49,6 +50,50 @@ from app.vector_store import FAISSVectorStore
 # ============================================================================
 
 DEFAULT_MAX_HISTORY_MESSAGES = 6
+
+
+def format_document_answer(answer: str, is_first_answer_with_doc: bool) -> str:
+    """Format assistant response according to document conversational rules:
+    - In a chat where user provided document(s), only the FIRST time the system answers
+      should it start with 'Based on provided documents, '.
+    - For all subsequent answers in that particular chat (or when no documents exist),
+      the system should directly answer the user's question without 'Based on provided documents'
+      or 'Based on the provided context'.
+    """
+    if not answer or not isinstance(answer, str):
+        return answer
+
+    trimmed = answer.strip()
+    if not trimmed or trimmed == INSUFFICIENT_CONTEXT_MESSAGE:
+        return answer
+
+    # Remove any existing introductory phrase like:
+    # "Based on the provided documents,"
+    # "Based on provided documents,"
+    # "Based on the provided context,"
+    # "Based on provided context,"
+    # "Based on the retrieved context,"
+    # "Based on context,"
+    prefix_pattern = r"^(?:Based on\s+(?:the\s+)?(?:provided\s+|retrieved\s+)?(?:documents?|context)[,:\s]*)"
+    cleaned = re.sub(prefix_pattern, "", trimmed, flags=re.IGNORECASE).strip()
+
+    if is_first_answer_with_doc:
+        if cleaned:
+            first_char = cleaned[0]
+            if (
+                len(cleaned) > 1
+                and first_char.isupper()
+                and cleaned[1].islower()
+                and not cleaned.startswith("I ")
+            ):
+                cleaned = first_char.lower() + cleaned[1:]
+            return f"Based on provided documents, {cleaned}"
+        return "Based on provided documents."
+    else:
+        # Directly answer the user's question
+        if cleaned:
+            return cleaned[0].upper() + cleaned[1:]
+        return answer
 
 
 # ============================================================================
@@ -429,6 +474,22 @@ class ChatbotService:
         status_code = "success" if sufficient else "insufficient_context"
         is_live = self._determine_is_live_llm() if getattr(sum_res, "method", "") == "llm" else False
 
+        has_documents = bool(self.conversation_store.get_documents(cid))
+        all_prior_msgs = self.conversation_store.get_messages(cid)
+        has_prior_doc_answer = any(
+            m.get("role") == "assistant"
+            and (
+                m.get("metadata", {}).get("answered_from_documents")
+                or bool(m.get("citations"))
+                or "Based on provided documents" in m.get("content", "")
+            )
+            for m in all_prior_msgs
+        )
+
+        if target == "document" and retrieved_chunks and sufficient:
+            is_first_doc_answer = has_documents and (not has_prior_doc_answer)
+            response_text = format_document_answer(response_text, is_first_doc_answer)
+
         assistant_record = self.conversation_store.add_message(
             conversation_id=cid,
             role="assistant",
@@ -440,6 +501,7 @@ class ChatbotService:
                 "summary_type": summary_type,
                 "sufficient_context": sufficient,
                 "is_live_llm": is_live,
+                "answered_from_documents": (target == "document" and sufficient and has_documents),
             },
         )
 
@@ -648,11 +710,34 @@ class ChatbotService:
                 intent_confidence=intent_res.confidence,
             )
 
+        # Check if conversation has uploaded documents
+        has_documents = bool(self.conversation_store.get_documents(cid))
+
+        # Check whether this chat has already had an assistant answer grounded in documents
+        all_prior_msgs = self.conversation_store.get_messages(cid)
+        has_prior_doc_answer = any(
+            m.get("role") == "assistant"
+            and (
+                m.get("metadata", {}).get("answered_from_documents")
+                or bool(m.get("citations"))
+                or "Based on provided documents" in m.get("content", "")
+            )
+            for m in all_prior_msgs
+        )
+
+        is_first_doc_answer = (
+            has_documents
+            and (not has_prior_doc_answer)
+            and rag_response.sufficient_context
+            and rag_response.generation_status == "success"
+        )
+        final_answer = format_document_answer(rag_response.answer, is_first_doc_answer)
+
         # Persist successful or insufficient_context assistant response
         assistant_record = self.conversation_store.add_message(
             conversation_id=cid,
             role="assistant",
-            content=rag_response.answer,
+            content=final_answer,
             citations=rag_response.citations,
             metadata={
                 "model_name": rag_response.model_name,
@@ -661,13 +746,14 @@ class ChatbotService:
                 "is_live_llm": is_live,
                 "intent": intent_res.intent,
                 "intent_confidence": intent_res.confidence,
+                "answered_from_documents": (has_documents and rag_response.sufficient_context),
             },
         )
 
         return ChatResponse(
             conversation_id=cid,
             user_message=cleaned_message,
-            assistant_response=rag_response.answer,
+            assistant_response=final_answer,
             citations=rag_response.citations,
             retrieved_chunks=rag_response.retrieved_chunks,
             sufficient_context=rag_response.sufficient_context,

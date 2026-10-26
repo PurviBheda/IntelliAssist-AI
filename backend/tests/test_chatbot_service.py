@@ -499,3 +499,39 @@ class TestErrorHandlingAndSafety:
         conv = svc.create_conversation()
         resp = svc.chat(conv["conversation_id"], "What is the password policy?")
         assert resp.status == "success"
+
+    def test_first_turn_based_on_provided_documents_and_subsequent_direct_answers(
+        self,
+        chatbot_service: ChatbotService,
+    ) -> None:
+        """Requirement 1: In a chat with a document, only the FIRST response starts with
+        'Based on provided documents', and subsequent answers directly answer the question.
+        """
+        conv = chatbot_service.create_conversation(title="Doc Thread")
+        cid = conv["conversation_id"]
+
+        # User provides a document
+        chatbot_service.conversation_store.add_document(
+            conversation_id=cid,
+            filename="security_policy.pdf",
+            file_type="pdf",
+            total_pages=5,
+        )
+
+        # Turn 1: First question after document is provided
+        resp1 = chatbot_service.chat(cid, "What is the password policy?")
+        assert resp1.status == "success"
+        assert resp1.assistant_response.startswith("Based on provided documents, ")
+
+        # Turn 2: Subsequent question in the same chat
+        resp2 = chatbot_service.chat(cid, "How long must passwords be?")
+        assert resp2.status == "success"
+        assert not resp2.assistant_response.startswith("Based on provided documents")
+        assert not resp2.assistant_response.startswith("Based on the provided")
+        assert "14 characters" in resp2.assistant_response
+
+        # Turn 3: Another subsequent question in the same chat
+        resp3 = chatbot_service.chat(cid, "How often do they expire?")
+        assert resp3.status == "success"
+        assert not resp3.assistant_response.startswith("Based on provided documents")
+        assert not resp3.assistant_response.startswith("Based on the provided")

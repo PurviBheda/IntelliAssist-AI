@@ -72,40 +72,21 @@ a {
 }
 
 .brand-mark {
-  position: relative;
-  width: 20px;
-  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  border-radius: 6px;
+  background: linear-gradient(135deg, #ff2d87 0%, #ea3897 28%, #a855f7 68%, #6d28d9 100%);
+  box-shadow: 0 2px 8px rgba(234, 56, 151, 0.4);
+  overflow: hidden;
 }
 
-.brand-mark span {
-  position: absolute;
+.brand-mark svg {
   display: block;
-  border-radius: 4px;
-  transform: rotate(-2deg);
-}
-
-.brand-mark span:nth-child(1) {
-  top: 2px;
-  left: 2px;
-  width: 8px;
-  height: 15px;
-  background: linear-gradient(155deg, #ffbd3e, #ff5b43);
-}
-
-.brand-mark span:nth-child(2) {
-  right: 2px;
-  bottom: 2px;
-  width: 12px;
-  height: 8px;
-  background: linear-gradient(90deg, #fe4f72, #9757ff);
-}
-
-.brand-mark span:nth-child(3) {
-  top: 2px;
-  left: 4px;
-  width: 4px;
-  height: 5px;
-  background: #ffdb67;
+  filter: drop-shadow(0 0 2px rgba(255, 255, 255, 0.85));
 }
 
 .utility-button {
@@ -137,13 +118,21 @@ a {
 }
 
 .workspace-icon {
-  display: grid;
-  width: 20px;
-  height: 20px;
-  place-items: center;
-  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
   color: white;
-  background: linear-gradient(145deg, #ff9a28, #e74833);
+  background: linear-gradient(135deg, #ff2d87 0%, #ea3897 28%, #a855f7 68%, #6d28d9 100%);
+  box-shadow: 0 2px 8px rgba(234, 56, 151, 0.4);
+  overflow: hidden;
+}
+
+.workspace-icon svg {
+  display: block;
+  filter: drop-shadow(0 0 2px rgba(255, 255, 255, 0.85));
 }
 
 .nav-item {
@@ -244,16 +233,19 @@ a {
 
 .avatar {
   display: grid;
-  width: 26px;
-  height: 26px;
-  flex: 0 0 26px;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
   place-items: center;
-  border: 1px solid #48484b;
+  border: 1px solid rgba(255, 255, 255, 0.25);
   border-radius: 50%;
-  color: #f1f1f2;
-  font-size: 9px;
+  color: #ffffff;
+  font-size: 10px;
   font-weight: 700;
-  background: linear-gradient(145deg, #b9a660, #303a26 60%, #19191b);
+  background: linear-gradient(135deg, #ff2d87 0%, #ea3897 28%, #a855f7 68%, #6d28d9 100%);
+  box-shadow: 0 2px 8px rgba(234, 56, 151, 0.35);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  letter-spacing: 0.02em;
 }
 
 .profile-copy {
@@ -271,9 +263,10 @@ a {
   right: 4px;
   width: 7px;
   height: 7px;
-  border: 1px solid #070708;
+  border: 1.5px solid #141416;
   border-radius: 50%;
-  background: #ff4a56;
+  background: #22c55e;
+  box-shadow: 0 0 6px rgba(34, 197, 94, 0.6);
 }
 
 .workspace {
@@ -873,10 +866,15 @@ h1 {
   width: 28px;
   height: 28px;
   border-radius: 7px;
-  background: linear-gradient(145deg, #fe4f72, #9757ff);
+  background: linear-gradient(135deg, #ff2d87 0%, #ea3897 28%, #a855f7 68%, #6d28d9 100%);
+  box-shadow: 0 2px 8px rgba(234, 56, 151, 0.35);
   color: white;
   flex-shrink: 0;
   margin-top: 2px;
+}
+
+.assistant-avatar svg {
+  filter: drop-shadow(0 0 2px rgba(255, 255, 255, 0.85));
 }
 
 .assistant-bubble {
@@ -1101,7 +1099,7 @@ h1 {
 }
 
 .three-dots-btn {
-  display: none;
+  display: grid;
   place-items: center;
   width: 20px;
   height: 20px;
@@ -1111,15 +1109,14 @@ h1 {
   cursor: pointer;
   flex-shrink: 0;
   transition: all 120ms ease;
+  opacity: 0.65;
 }
 
 .recent-item:hover .three-dots-btn,
-.three-dots-btn.menu-open {
-  display: grid;
-}
-
 .three-dots-btn:hover,
 .three-dots-btn.menu-open {
+  display: grid;
+  opacity: 1;
   color: #ffffff;
   background: #2c2c31;
 }
