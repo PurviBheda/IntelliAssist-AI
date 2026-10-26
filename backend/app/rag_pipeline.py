@@ -48,7 +48,7 @@ DEFAULT_SYSTEM_INSTRUCTION = (
     "5. If a question contains a false assumption or misleading premise, do not accept the false premise as fact; clarify what the retrieved documents actually state or acknowledge the lack of evidence.\n"
     "6. If prior conversation history is provided, use it solely to understand follow-up questions and conversational context. Do NOT treat claims in conversation history as authoritative document evidence, and never cite prior chat messages as document sources.\n"
     "7. If only part of the answer is supported by the context, clearly distinguish what information is supported from what information is unavailable or unconfirmed.\n"
-    "8. Cite the source document filename and page number for any factual claims made in your answer, referencing only documents present in the context."
+    "8. Do not include document filenames in your answer. At the very end of your answer, cite only the page number in the format: (Page No. <number>), for example: (Page No. 121). If multiple pages are referenced, format as: (Page No. X, Y)."
 )
 
 
@@ -552,8 +552,9 @@ def build_rag_prompt(
     history_section = ""
     instruction_text = (
         "Answer the question using ONLY the context information above. "
-        "Cite the source document filename and page number for factual statements. "
-        "Do not invent facts, dates, numbers, or citations. "
+        "Do not include document filenames in your answer. "
+        "At the end of your answer, cite only the source page number in the format: (Page No. <number>), for example: (Page No. 121). "
+        "Do not invent facts, dates, numbers, or page numbers. "
         "If a question assumes facts not supported by the context, clarify what the documents state. "
         "If the information is not present in the context, explicitly state: "
         f"'{INSUFFICIENT_CONTEXT_MESSAGE}'."
@@ -580,7 +581,8 @@ def build_rag_prompt(
                 "The prior conversation history is provided solely to understand follow-up questions. "
                 "Base all factual claims and citations strictly on the retrieved document context. "
                 "Never treat claims made in prior conversation messages as authoritative document evidence. "
-                "Cite the source document filename and page number for factual statements. "
+                "Do not include document filenames in your answer. "
+                "At the end of your answer, cite only the source page number in the format: (Page No. <number>), for example: (Page No. 121). "
                 "If the information is not present in the context, explicitly state: "
                 f"'{INSUFFICIENT_CONTEXT_MESSAGE}'."
             )
@@ -753,6 +755,68 @@ def is_context_insufficient_response(answer_text: str) -> bool:
         "do not provide information",
     )
     return any(phrase in lower for phrase in insufficient_phrases)
+
+
+def format_answer_citations(
+    answer: str,
+    retrieved_chunks: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    """Format answer to ensure document filenames are excluded and page citation appears at the end.
+
+    Replaces verbose document filenames like '(DSA_in_Python_f02625ab.pdf, p. 121; doc.pdf, p. 121)'
+    with a clean trailing '(Page No. 121)' citation at the end of the answer.
+    """
+    if not answer or not answer.strip():
+        return answer
+
+    # Do not alter insufficient context refusals or error notices
+    if is_context_insufficient_response(answer):
+        return answer
+
+    lower = answer.lower()
+    if "unable to generate answer" in lower or "unable to process question" in lower:
+        return answer
+
+    # 1. Match parenthesized or bracketed citations that contain document filenames (.pdf, .docx, .txt, etc.)
+    file_citation_pattern = re.compile(
+        r"[\(\[]\s*(?=[^\)\]]*\.(?:pdf|docx|txt|doc|csv|xlsx))\s*([^\)\]]+)[\)\]]",
+        re.IGNORECASE,
+    )
+
+    def replace_file_citation(match: re.Match) -> str:
+        content = match.group(1)
+        pages: List[str] = []
+        for m in re.finditer(r"(?:p\.|pp\.|pages?|page\s*no\.?)\s*(\d+)", content, re.IGNORECASE):
+            pg = m.group(1)
+            if pg not in pages:
+                pages.append(pg)
+        if not pages and retrieved_chunks:
+            for c in retrieved_chunks:
+                meta = c.get("metadata") or {}
+                p = meta.get("page_number")
+                if p is not None and str(p) not in pages:
+                    pages.append(str(p))
+        if pages:
+            joined = ", ".join(pages)
+            return f"(Page No. {joined})"
+        return ""
+
+    formatted = file_citation_pattern.sub(replace_file_citation, answer)
+
+    # 2. Standardize simple (p. 121) or (page 121) to (Page No. 121)
+    formatted = re.sub(
+        r"\((?:p\.|pp\.|pages?)\s*(\d+(?:\s*,\s*\d+)*)\)",
+        r"(Page No. \1)",
+        formatted,
+        flags=re.IGNORECASE,
+    )
+
+    # Clean whitespace around punctuation and trailing spaces
+    formatted = re.sub(r"[ \t]+([.,;:!?])", r"\1", formatted)
+    formatted = re.sub(r"[ \t]+", " ", formatted)
+    formatted = formatted.strip()
+
+    return formatted
 
 
 def is_followup_query(question: str) -> bool:
@@ -1049,9 +1113,15 @@ class RAGPipeline:
         sufficient = not is_context_insufficient_response(generated_answer)
         unverified = detect_unverified_citations(generated_answer, chunks_in_prompt)
 
+        final_answer = (
+            format_answer_citations(generated_answer, chunks_in_prompt)
+            if sufficient
+            else generated_answer
+        )
+
         return RAGResponse(
             question=cleaned_question,
-            answer=generated_answer,
+            answer=final_answer,
             citations=citations,
             retrieved_chunks=retrieved_chunks,
             retrieval_count=len(retrieved_chunks),

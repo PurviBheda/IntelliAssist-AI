@@ -395,18 +395,14 @@ h1 {
   gap: 8px;
 }
 
-.icon-button,
-.plan-button {
+.icon-button {
   display: grid;
+  width: 30px;
   height: 30px;
   place-items: center;
+  border-radius: 50%;
   color: #b8b8bc;
   background: transparent;
-}
-
-.icon-button {
-  width: 30px;
-  border-radius: 50%;
 }
 
 .icon-button:hover {
@@ -418,11 +414,6 @@ h1 {
   font-size: 24px;
   font-weight: 300;
   line-height: 1;
-}
-
-.plan-button {
-  padding: 0 5px;
-  font-size: 12px;
 }
 
 .send-button {
@@ -1049,7 +1040,7 @@ h1 {
   margin: 3px 0 8px 14px;
   padding-left: 8px;
   border-left: 1px solid #232326;
-  max-height: 220px;
+  max-height: 260px;
   overflow-y: auto;
 }
 
@@ -1082,11 +1073,11 @@ h1 {
 .recent-item-title {
   display: flex;
   align-items: center;
-  gap: 6px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
+  min-width: 0;
 }
 
 .recent-item-title span {

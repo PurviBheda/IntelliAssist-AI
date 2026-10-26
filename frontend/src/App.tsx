@@ -155,16 +155,15 @@ function BrandMark() {
   )
 }
 
-const projects = [
-  ["clock", "Recent"],
-  ["star", "Starred"],
-  ["share", "Shared with me"],
-] as const
-
-const resources = [
-  ["compass", "Discover"],
-  ["templates", "Templates"],
-] as const
+function formatConversationTitle(rawTitle: string): string {
+  if (!rawTitle) return "Conversation"
+  return (
+    rawTitle
+      .replace(/^[\s📄📑📁⭐*•\-]+\s*/gu, "")
+      .replace(/\s*⭐+\s*$/gu, "")
+      .trim() || rawTitle
+  )
+}
 
 export default function App() {
   const [mobileOpen, setMobileOpen] = useState(false)
@@ -463,9 +462,9 @@ export default function App() {
 
   function renderConversationItem(c: ConversationItem) {
     const isActive = activeConversationId === c.conversation_id
-    const hasDoc = c.documents && c.documents.length > 0
     const isMenuOpen =
       menuTarget?.conversation.conversation_id === c.conversation_id
+    const displayTitle = formatConversationTitle(c.title)
 
     return (
       <div
@@ -475,27 +474,20 @@ export default function App() {
           setIsSharedView(false)
           openConversation(c)
         }}
-        title={c.title}
+        title={displayTitle}
       >
         <div className="recent-item-title">
-          <Icon name={hasDoc ? "file" : "sparkles"} size={12} />
-          <span>{c.title}</span>
+          <span>{displayTitle}</span>
         </div>
 
         <div
           className="recent-item-actions"
           onClick={(e) => e.stopPropagation()}
         >
-          {c.is_starred && (
-            <span className="convo-star-icon" title="Starred conversation">
-              <Icon name="star" size={11} />
-            </span>
-          )}
-
           <button
             aria-expanded={isMenuOpen}
             aria-haspopup="true"
-            aria-label={`Options for ${c.title}`}
+            aria-label={`Options for ${displayTitle}`}
             className={`three-dots-btn ${isMenuOpen ? "menu-open" : ""}`}
             onClick={(e) => handleOpenMenu(e, c)}
             title="More options"
@@ -872,19 +864,6 @@ export default function App() {
               )}
             </div>
           )}
-
-          <p className="nav-label">Resources</p>
-
-          {resources.map(([icon, label]) => (
-            <a
-              className="nav-item"
-              href={`#${label.toLowerCase()}`}
-              key={label}
-            >
-              <Icon name={icon} size={14} />
-              {label}
-            </a>
-          ))}
         </nav>
 
         <div className="sidebar-footer">
@@ -1054,10 +1033,6 @@ export default function App() {
                 </div>
 
                 <div className="right-actions">
-                  <button className="plan-button" type="button">
-                    Plan
-                  </button>
-
                   <button
                     aria-label="Use voice input"
                     className="icon-button"
@@ -1145,43 +1120,6 @@ export default function App() {
                               This answer was strictly grounded; unverified
                               facts were excluded.
                             </span>
-                          </div>
-                        )}
-
-                        {/* Citations & Source References */}
-                        {msg.citations && msg.citations.length > 0 && (
-                          <div className="citations-section">
-                            <div className="citations-header">
-                              <Icon name="file" size={12} />
-                              <span>
-                                Sources & References ({msg.citations.length})
-                              </span>
-                            </div>
-
-                            <div className="citation-list">
-                              {msg.citations.map(
-                                (c: Citation, cIdx: number) => (
-                                  <div
-                                    className="citation-chip"
-                                    key={cIdx}
-                                    title={`Chunk: ${c.chunk_id || "n/a"}`}
-                                  >
-                                    <Icon name="file" size={11} />
-                                    <span>{c.filename || "document"}</span>
-                                    {c.page_number && (
-                                      <span className="page-tag">
-                                        p. {c.page_number}
-                                      </span>
-                                    )}
-                                    {c.similarity_score !== undefined && (
-                                      <span className="score-tag">
-                                        {Math.round(c.similarity_score * 100)}%
-                                      </span>
-                                    )}
-                                  </div>
-                                ),
-                              )}
-                            </div>
                           </div>
                         )}
                       </div>
@@ -1332,10 +1270,6 @@ export default function App() {
                   </div>
 
                   <div className="right-actions">
-                    <button className="plan-button" type="button">
-                      Plan
-                    </button>
-
                     <button
                       aria-label="Use voice input"
                       className="icon-button"
@@ -1441,8 +1375,8 @@ export default function App() {
                 lineHeight: "1.4",
               }}
             >
-              Anyone with this link can view this conversation and its citations
-              in read-only mode.
+              Anyone with this link can view this conversation in read-only
+              mode.
             </p>
 
             <div className="share-link-box">

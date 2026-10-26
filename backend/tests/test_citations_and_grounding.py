@@ -44,6 +44,7 @@ from app.rag_pipeline import (
     build_citations,
     build_rag_prompt,
     detect_unverified_citations,
+    format_answer_citations,
     is_context_insufficient_response,
 )
 from app.vector_store import FAISSVectorStore
@@ -577,3 +578,32 @@ class TestRobustnessAndPersistence:
             llm_client=mock_llm,
         )
         assert isinstance(chatbot, ChatbotService)
+
+    def test_page_number_only_citation_formatting(self) -> None:
+        """Verify verbose filenames in citations are removed and formatted as (Page No. X) at the end."""
+        user_input_answer = (
+            "Based on the provided documents, **recursion** is a method of solving problems "
+            "that involves breaking a problem down into smaller and smaller subproblems until a "
+            "small enough problem is reached that it can be solved trivially "
+            "(DSA_in_Python_f02625ab.pdf, p. 121; DSA_in_Python_10ff3639.pdf, p. 121)."
+        )
+        formatted = format_answer_citations(user_input_answer)
+        assert "DSA_in_Python" not in formatted
+        assert ".pdf" not in formatted
+        assert "(Page No. 121)" in formatted
+        assert formatted.endswith("(Page No. 121).")
+
+        # Multiple distinct pages
+        multi_page = "Recursion is explained (doc1.pdf, p. 12; doc2.docx, p. 15)."
+        formatted_multi = format_answer_citations(multi_page)
+        assert "(Page No. 12, 15)" in formatted_multi
+        assert "doc1.pdf" not in formatted_multi
+        assert "doc2.docx" not in formatted_multi
+
+        # Already formatted (Page No. X)
+        already_clean = "Recursion is a technique (Page No. 121)."
+        assert format_answer_citations(already_clean) == "Recursion is a technique (Page No. 121)."
+
+        # Refusal message not modified
+        refusal = "The available documents do not contain enough information to answer this question."
+        assert format_answer_citations(refusal) == refusal

@@ -36,6 +36,7 @@ from app.rag_pipeline import (
     RAGPipeline,
     RAGResponse,
     build_citations,
+    format_answer_citations,
     validate_question,
 )
 from app.sentiment_analyzer import SentimentAnalyzer, SentimentResult
@@ -416,7 +417,11 @@ class ChatbotService:
                         summary_type=summary_type,
                         raise_errors=False,
                     )
-                    response_text = sum_res.summary
+                    response_text = (
+                        format_answer_citations(sum_res.summary, retrieved_chunks)
+                        if sufficient
+                        else sum_res.summary
+                    )
 
                     # Build structured source citations matching the retrieved chunks
                     citations = build_citations(retrieved_chunks, response_text)
