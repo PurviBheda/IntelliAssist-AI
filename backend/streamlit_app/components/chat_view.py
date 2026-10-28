@@ -1,12 +1,15 @@
-"""Streamlit Chat View Component for IntelliAssist AI.
+"""Streamlit Chat View Component for IntelliAssist AI (Option B - Native Streamlit).
 
 Implements:
-- Modest welcome heading centered horizontally and vertically when empty
-- Chronological, vertically flowing ~800px conversation column
-- Unified bottom-anchored composer: [ + ] [ Ask anything about your documents... ] [ ↑ ]
-- Small attachment chips
-- Plain assistant responses with compact expandable Source Citations
-- User-friendly error messaging on model failures
+- Plain white, minimalist ChatGPT-style conversation layout.
+- Modest welcome heading: "How can I help you today?" centered horizontally and vertically when empty.
+- Chronological, vertically flowing ~800px conversation column.
+- Streamlit-native custom composer: [ + ] [ Ask anything about your documents... ] [ ↑ ]
+  using st.columns(), st.popover(), st.text_area(), and st.button().
+- Small compact attachment chips directly above the composer.
+- Grounded assistant responses with compact expandable Source Citations.
+- Robust session-state lifecycle (no duplicates, draft clearing, blank rejection).
+- Graceful error handling for model generation and connection failures.
 """
 
 from __future__ import annotations
@@ -79,24 +82,196 @@ def _render_summary_card(summary: Dict[str, Any]) -> None:
     )
 
 
+def _submit_chat_message() -> None:
+    """Callback triggered on send button click. Clears draft and schedules query."""
+    draft = st.session_state.get("chat_composer_draft", "")
+    cleaned = draft.strip()
+    if cleaned:
+        st.session_state["pending_query"] = cleaned
+        st.session_state["chat_composer_draft"] = ""
+
+
 def render_chat_view(client: IntelliAssistApiClient) -> None:
-    """Render the main chat interface, past messages, welcome heading, and input composer."""
+    """Render the main chat interface, past messages, welcome heading, and custom composer."""
+    # Scoped styling for clean, minimalist ChatGPT visual design
+    st.markdown(
+        """
+        <style>
+        /* Empty screen modest welcome container */
+        .chat-empty-container {
+            min-height: 44vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 2.5rem 1rem 1rem 1rem;
+        }
+        .chat-empty-heading {
+            font-size: 1.75rem;
+            font-weight: 600;
+            color: #171717;
+            margin: 0;
+            letter-spacing: -0.02em;
+        }
+
+        /* Custom Composer Row in st.bottom */
+        div[data-testid="stBottomBlockContainer"] {
+            background-color: #FFFFFF !important;
+        }
+        div[data-testid="stBottomBlockContainer"] [data-testid="column"] {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* Popover [+] button */
+        div[data-testid="stBottomBlockContainer"] div[data-testid="stPopover"] {
+            width: 100% !important;
+            display: flex !important;
+            justify-content: center !important;
+        }
+        div[data-testid="stBottomBlockContainer"] div[data-testid="stPopover"] > button {
+            border-radius: 50% !important;
+            width: 42px !important;
+            height: 42px !important;
+            min-height: 42px !important;
+            padding: 0 !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            font-size: 1.2rem !important;
+            font-weight: 500 !important;
+            border: 1px solid #E5E5E5 !important;
+            background-color: #FFFFFF !important;
+            color: #404040 !important;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04) !important;
+            transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease !important;
+        }
+        div[data-testid="stBottomBlockContainer"] div[data-testid="stPopover"] > button:hover {
+            background-color: #F4F4F4 !important;
+            border-color: #D4D4D4 !important;
+            color: #171717 !important;
+        }
+
+        /* Textarea input in middle column */
+        div[data-testid="stBottomBlockContainer"] div[data-testid="stTextArea"] {
+            width: 100% !important;
+            margin-bottom: 0 !important;
+        }
+        div[data-testid="stBottomBlockContainer"] div[data-testid="stTextArea"] > div {
+            border: 1px solid #E5E5E5 !important;
+            border-radius: 16px !important;
+            background-color: #FFFFFF !important;
+            box-shadow: 0 1px 4px rgba(0, 0, 0, 0.03) !important;
+            transition: border-color 0.15s ease, box-shadow 0.15s ease !important;
+        }
+        div[data-testid="stBottomBlockContainer"] div[data-testid="stTextArea"] > div:focus-within {
+            border-color: #737373 !important;
+            box-shadow: 0 1px 6px rgba(0, 0, 0, 0.08) !important;
+        }
+        div[data-testid="stBottomBlockContainer"] div[data-testid="stTextArea"] textarea {
+            border: none !important;
+            border-radius: 16px !important;
+            background-color: transparent !important;
+            color: #171717 !important;
+            font-size: 0.95rem !important;
+            line-height: 1.45 !important;
+            padding: 10px 14px !important;
+            resize: none !important;
+            min-height: 42px !important;
+            max-height: 140px !important;
+        }
+        div[data-testid="stBottomBlockContainer"] div[data-testid="stTextArea"] textarea::placeholder {
+            color: #8E8E8E !important;
+            opacity: 1 !important;
+        }
+
+        /* Send [↑] button */
+        div[data-testid="stBottomBlockContainer"] div[data-testid="stButton"] {
+            width: 100% !important;
+            display: flex !important;
+            justify-content: center !important;
+        }
+        div[data-testid="stBottomBlockContainer"] div[data-testid="stButton"] > button {
+            border-radius: 50% !important;
+            width: 42px !important;
+            height: 42px !important;
+            min-height: 42px !important;
+            padding: 0 !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            font-size: 1.15rem !important;
+            font-weight: 600 !important;
+            border: 1px solid #171717 !important;
+            background-color: #171717 !important;
+            color: #FFFFFF !important;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06) !important;
+            transition: background-color 0.15s ease, border-color 0.15s ease !important;
+        }
+        div[data-testid="stBottomBlockContainer"] div[data-testid="stButton"] > button:hover {
+            background-color: #333333 !important;
+            border-color: #333333 !important;
+            color: #FFFFFF !important;
+        }
+        div[data-testid="stBottomBlockContainer"] div[data-testid="stButton"] > button:active {
+            background-color: #000000 !important;
+            border-color: #000000 !important;
+        }
+
+        /* Compact document chip */
+        .doc-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            background: #F4F4F4;
+            border: 1px solid #E5E5E5;
+            border-radius: 12px;
+            padding: 3px 9px;
+            font-size: 0.78rem;
+            color: #404040;
+            font-weight: 500;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
     messages: List[Dict[str, Any]] = st.session_state.setdefault("messages", [])
     cid = st.session_state.get("current_conversation_id")
     active_docs: List[Dict[str, Any]] = st.session_state.get("active_documents", [])
+    st.session_state.setdefault("chat_composer_draft", "")
 
-    # 1. Homepage State (Only when no messages exist) - Vertically and horizontally centered
-    if not messages:
+    # Retrieve and consume any pending query submission
+    pending_query = st.session_state.pop("pending_query", None)
+
+    # 1. Empty Screen State (Modest heading, centered horizontally and vertically)
+    if not messages and not pending_query:
         st.markdown(
             """
-            <div style="min-height: 46vh; display: flex; align-items: center; justify-content: center; text-align: center;">
-                <h2 style="font-size: 1.75rem; font-weight: 600; color: #262626; margin: 0; letter-spacing: -0.02em;">
+            <div class="chat-empty-container">
+                <h2 class="chat-empty-heading">
                     How can I help you today?
                 </h2>
             </div>
             """,
             unsafe_allow_html=True,
         )
+
+    # If a new query was submitted, register it in the conversation thread
+    if pending_query:
+        if not cid:
+            try:
+                new_conv = client.create_conversation(title="Document Discussion")
+                cid = new_conv["conversation_id"]
+                st.session_state["current_conversation_id"] = cid
+            except Exception:
+                cid = str(uuid.uuid4())
+                st.session_state["current_conversation_id"] = cid
+
+        user_msg = {"role": "user", "content": pending_query}
+        messages.append(user_msg)
 
     # 2. Conversation Turns (Chronological, vertically flowing column)
     for msg in messages:
@@ -117,7 +292,7 @@ def render_chat_view(client: IntelliAssistApiClient) -> None:
                 citations = msg.get("citations") or metadata.get("citations") or []
                 _render_citations(citations)
 
-                # Sentiment & Summary metrics if requested
+                # Sentiment & Summary metrics if present
                 sent = metadata.get("sentiment_result") or msg.get("sentiment_result")
                 if sent:
                     _render_sentiment_card(sent)
@@ -128,7 +303,65 @@ def render_chat_view(client: IntelliAssistApiClient) -> None:
             else:
                 st.markdown(content)
 
-    # 3. Anchored Bottom Composer Bar: [ + ] [ Ask anything about your documents... ] [ ↑ ]
+    # 3. Handle Live Assistant Query Processing
+    if pending_query:
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                try:
+                    response_data = client.send_chat_message(
+                        conversation_id=cid,
+                        message=pending_query,
+                        auto_create_conversation=True,
+                    )
+
+                    answer = response_data.get("assistant_response", "")
+                    citations = response_data.get("citations", [])
+                    intent_val = response_data.get("intent")
+                    sent_res = response_data.get("sentiment_result")
+                    sum_res = response_data.get("summary_result")
+                    gen_status = response_data.get("status")
+                    err_msg = response_data.get("error")
+
+                    # Handle model generation failure gracefully with user-friendly alert
+                    if gen_status == "error" or "Unable to generate answer due to language model failure" in answer:
+                        st.warning("⚠️ The AI service is currently busy or rate-limited. Please try asking again in a moment.")
+                        logger.warning("Language model failure for query '%s': %s", pending_query, err_msg)
+                    else:
+                        # Display intent caption if special intent
+                        if intent_val and intent_val != "document_question":
+                            st.caption(f"`{intent_val.replace('_', ' ').capitalize()}`")
+
+                        # Display clean answer text
+                        st.markdown(answer)
+
+                        # Display citations
+                        _render_citations(citations)
+
+                        # Display sentiment/summary if present
+                        if sent_res:
+                            _render_sentiment_card(sent_res)
+                        if sum_res:
+                            _render_summary_card(sum_res)
+
+                        # Save assistant message to session state
+                        asst_msg = {
+                            "role": "assistant",
+                            "content": answer,
+                            "citations": citations,
+                            "intent": intent_val,
+                            "sentiment_result": sent_res,
+                            "summary_result": sum_res,
+                        }
+                        messages.append(asst_msg)
+
+                except ApiStatusError as err:
+                    st.error(f"Error ({err.status_code}): {err.detail or err}")
+                except ApiConnectionError as err:
+                    st.error(f"Connection failed: {err}")
+                except Exception as err:
+                    st.error(f"Unexpected error: {err}")
+
+    # 4. Anchored Bottom Custom Composer Bar: [ + ] [ Ask anything about your documents... ] [ ↑ ]
     with st.bottom:
         # Small attachment chips directly above the input box
         if active_docs:
@@ -139,30 +372,36 @@ def render_chat_view(client: IntelliAssistApiClient) -> None:
                 ]
             )
             st.markdown(
-                f"<div style='display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-bottom:6px;'>"
+                f"<div style='display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-bottom:8px;'>"
                 f"{chips_html}"
                 f"</div>",
                 unsafe_allow_html=True,
             )
 
-        # Single visually connected row: [+] on the left, input in middle, send arrow on right
-        col_plus, col_input = st.columns([1, 16], vertical_alignment="center")
+        # Custom horizontal composer: [ + ] [ text_area ] [ ↑ ]
+        col_plus, col_input, col_send = st.columns([1, 14, 1], vertical_alignment="center")
 
         with col_plus:
-            with st.popover("＋", help="Attach document (PDF, DOCX, TXT)"):
-                st.markdown("<div style='font-size:0.85rem; font-weight:600; margin-bottom:6px;'>Attach Document</div>", unsafe_allow_html=True)
+            with st.popover("＋", help="Attach document (PDF, DOCX, TXT)", use_container_width=True):
+                st.markdown(
+                    "<div style='font-size:0.85rem; font-weight:600; margin-bottom:8px; color:#262626;'>"
+                    "Attach Document"
+                    "</div>",
+                    unsafe_allow_html=True,
+                )
+                uploader_key = f"composer_uploader_{cid or 'default'}"
                 uploaded_file = st.file_uploader(
                     "Upload file",
                     type=["pdf", "docx", "txt"],
                     label_visibility="collapsed",
-                    key="composer_unified_uploader",
+                    key=uploader_key,
                 )
                 if uploaded_file is not None:
-                    sig = f"{uploaded_file.name}_{uploaded_file.size}_{st.session_state.get('current_conversation_id', '')}"
+                    sig = f"{uploaded_file.name}_{uploaded_file.size}_{cid or ''}"
                     processed_sigs = st.session_state.setdefault("processed_upload_signatures", set())
 
                     if sig not in processed_sigs:
-                        active_cid = st.session_state.get("current_conversation_id")
+                        active_cid = cid
                         if not active_cid:
                             try:
                                 new_thread = client.create_conversation(title=f"{uploaded_file.name} Query")
@@ -197,82 +436,21 @@ def render_chat_view(client: IntelliAssistApiClient) -> None:
                                 st.error(f"Upload failed: {err}")
 
         with col_input:
-            prompt = st.chat_input("Ask anything about your documents...")
+            st.text_area(
+                "Ask anything about your documents...",
+                placeholder="Ask anything about your documents...",
+                key="chat_composer_draft",
+                label_visibility="collapsed",
+                height=42,
+                max_chars=4000,
+            )
 
-    if prompt and prompt.strip():
-        user_text = prompt.strip()
-
-        # Ensure active conversation ID is set
-        if not cid:
-            try:
-                new_conv = client.create_conversation(title="Document Discussion")
-                cid = new_conv["conversation_id"]
-                st.session_state["current_conversation_id"] = cid
-            except Exception:
-                cid = str(uuid.uuid4())
-                st.session_state["current_conversation_id"] = cid
-
-        # Append and display user message immediately
-        user_msg = {"role": "user", "content": user_text}
-        messages.append(user_msg)
-
-        with st.chat_message("user"):
-            st.markdown(user_text)
-
-        # Generate grounded assistant response
-        with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
-                try:
-                    response_data = client.send_chat_message(
-                        conversation_id=cid,
-                        message=user_text,
-                        auto_create_conversation=True,
-                    )
-
-                    answer = response_data.get("assistant_response", "")
-                    citations = response_data.get("citations", [])
-                    intent_val = response_data.get("intent")
-                    sent_res = response_data.get("sentiment_result")
-                    sum_res = response_data.get("summary_result")
-                    gen_status = response_data.get("status")
-                    err_msg = response_data.get("error")
-
-                    # Handle model generation failure gracefully with user-friendly alert
-                    if gen_status == "error" or "Unable to generate answer due to language model failure" in answer:
-                        st.warning("⚠️ The AI service is currently busy or rate-limited. Please try asking again in a moment.")
-                        logger.warning("Language model failure for query '%s': %s", user_text, err_msg)
-                        return
-
-                    # Display intent caption if special intent
-                    if intent_val and intent_val != "document_question":
-                        st.caption(f"`{intent_val.replace('_', ' ').capitalize()}`")
-
-                    # Display clean answer text
-                    st.markdown(answer)
-
-                    # Display citations
-                    _render_citations(citations)
-
-                    # Display sentiment/summary if present
-                    if sent_res:
-                        _render_sentiment_card(sent_res)
-                    if sum_res:
-                        _render_summary_card(sum_res)
-
-                    # Save assistant message to session state
-                    asst_msg = {
-                        "role": "assistant",
-                        "content": answer,
-                        "citations": citations,
-                        "intent": intent_val,
-                        "sentiment_result": sent_res,
-                        "summary_result": sum_res,
-                    }
-                    messages.append(asst_msg)
-
-                except ApiStatusError as err:
-                    st.error(f"Error ({err.status_code}): {err.detail or err}")
-                except ApiConnectionError as err:
-                    st.error(f"Connection failed: {err}")
-                except Exception as err:
-                    st.error(f"Unexpected error: {err}")
+        with col_send:
+            st.button(
+                "↑",
+                key="chat_send_btn",
+                help="Send message",
+                on_click=_submit_chat_message,
+                type="primary",
+                use_container_width=True,
+            )
