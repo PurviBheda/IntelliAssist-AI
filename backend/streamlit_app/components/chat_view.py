@@ -193,31 +193,65 @@ def render_chat_view(client: IntelliAssistApiClient) -> None:
             display: flex !important;
             justify-content: center !important;
         }
-        div[data-testid="stBottomBlockContainer"] div[data-testid="stButton"] > button {
-            border-radius: 50% !important;
+        div[data-testid="stBottomBlockContainer"] div[data-testid="stButton"] > button,
+        div[data-testid="stBottomBlockContainer"] div[data-testid="stButton"] > button[kind="secondary"],
+        div[data-testid="stBottomBlockContainer"] div[data-testid="stButton"] > button[data-testid="baseButton-secondary"],
+        div[data-testid="stBottomBlockContainer"] div[data-testid="stButton"] > button[kind="primary"],
+        div[data-testid="stBottomBlockContainer"] div[data-testid="stButton"] > button[data-testid="baseButton-primary"] {
+            border-radius: 8px !important;
             width: 42px !important;
             height: 42px !important;
             min-height: 42px !important;
+            max-width: 42px !important;
             padding: 0 !important;
             display: flex !important;
             align-items: center !important;
             justify-content: center !important;
             font-size: 1.15rem !important;
             font-weight: 600 !important;
-            border: 1px solid #171717 !important;
-            background-color: #171717 !important;
-            color: #FFFFFF !important;
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06) !important;
-            transition: background-color 0.15s ease, border-color 0.15s ease !important;
+            border: 1px solid #D9D9D9 !important;
+            background-color: #FFFFFF !important;
+            color: #000000 !important;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04) !important;
+            transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease !important;
         }
-        div[data-testid="stBottomBlockContainer"] div[data-testid="stButton"] > button:hover {
-            background-color: #333333 !important;
-            border-color: #333333 !important;
-            color: #FFFFFF !important;
+        div[data-testid="stBottomBlockContainer"] div[data-testid="stButton"] > button p,
+        div[data-testid="stBottomBlockContainer"] div[data-testid="stButton"] > button span,
+        div[data-testid="stBottomBlockContainer"] div[data-testid="stButton"] > button div {
+            color: #000000 !important;
+            font-weight: 600 !important;
+            font-size: 1.15rem !important;
+            line-height: 1 !important;
+            margin: 0 !important;
+            padding: 0 !important;
         }
-        div[data-testid="stBottomBlockContainer"] div[data-testid="stButton"] > button:active {
-            background-color: #000000 !important;
-            border-color: #000000 !important;
+        div[data-testid="stBottomBlockContainer"] div[data-testid="stButton"] > button:hover,
+        div[data-testid="stBottomBlockContainer"] div[data-testid="stButton"] > button[kind="secondary"]:hover,
+        div[data-testid="stBottomBlockContainer"] div[data-testid="stButton"] > button[data-testid="baseButton-secondary"]:hover,
+        div[data-testid="stBottomBlockContainer"] div[data-testid="stButton"] > button[kind="primary"]:hover,
+        div[data-testid="stBottomBlockContainer"] div[data-testid="stButton"] > button[data-testid="baseButton-primary"]:hover {
+            background-color: #F4F4F4 !important;
+            border-color: #D9D9D9 !important;
+            color: #000000 !important;
+        }
+        div[data-testid="stBottomBlockContainer"] div[data-testid="stButton"] > button:hover p,
+        div[data-testid="stBottomBlockContainer"] div[data-testid="stButton"] > button:hover span,
+        div[data-testid="stBottomBlockContainer"] div[data-testid="stButton"] > button:hover div {
+            color: #000000 !important;
+        }
+        div[data-testid="stBottomBlockContainer"] div[data-testid="stButton"] > button:active,
+        div[data-testid="stBottomBlockContainer"] div[data-testid="stButton"] > button[kind="secondary"]:active,
+        div[data-testid="stBottomBlockContainer"] div[data-testid="stButton"] > button[data-testid="baseButton-secondary"]:active {
+            background-color: #EAEAEA !important;
+            border-color: #BFBFBF !important;
+            color: #000000 !important;
+        }
+        div[data-testid="stBottomBlockContainer"] div[data-testid="stButton"] > button:focus {
+            box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.12) !important;
+        }
+        div[data-testid="stBottomBlockContainer"] div[data-testid="stButton"] > button:focus-visible {
+            outline: 2px solid #000000 !important;
+            outline-offset: 2px !important;
         }
 
         /* Compact document chip */
@@ -451,6 +485,6 @@ def render_chat_view(client: IntelliAssistApiClient) -> None:
                 key="chat_send_btn",
                 help="Send message",
                 on_click=_submit_chat_message,
-                type="primary",
+                type="secondary",
                 use_container_width=True,
             )
