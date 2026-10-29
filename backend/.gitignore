@@ -27,7 +27,21 @@ htmlcov/
 # Evaluation Results
 evaluation_results/
 
-# SQLite databases
+# User uploaded documents and runtime data
+data/uploads/*
+!data/uploads/.gitkeep
+data/*.db*
+data/*.sqlite*
+
+# SQLite databases and journal files
 *.db
+*.db-journal
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
+
+# Logs and temporary files
+*.log
+logs/
+.pytest_temp/

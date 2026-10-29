@@ -9,9 +9,11 @@ reproducible source attribution, cosine similarity ranking, and strict input val
 from __future__ import annotations
 
 import copy
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Union
 import faiss
 import numpy as np
+from sklearn.feature_extraction.text import TfidfVectorizer
 
 
 DEFAULT_EMBEDDING_DIMENSION = 384
@@ -51,6 +53,9 @@ class FAISSVectorStore:
         self._index: faiss.IndexFlatIP = faiss.IndexFlatIP(self._dimension)
         self._records: List[Dict[str, Any]] = []
         self._chunk_ids: Set[str] = set()
+        self._stored_embeddings: List[np.ndarray] = []
+        self._tfidf_vectorizer: Optional[TfidfVectorizer] = None
+        self._tfidf_matrix: Optional[Any] = None
 
     @property
     def dimension(self) -> int:
@@ -72,15 +77,81 @@ class FAISSVectorStore:
         """Return True if the index contains zero vectors."""
         return self.total_vectors == 0
 
+    @property
+    def tfidf_vectorizer(self) -> Optional[TfidfVectorizer]:
+        """Return the fitted scikit-learn TfidfVectorizer instance, or None if unindexed."""
+        return self._tfidf_vectorizer
+
+    @property
+    def tfidf_matrix(self) -> Optional[Any]:
+        """Return the sparse TF-IDF document-term matrix, or None if unindexed."""
+        return self._tfidf_matrix
+
+    @property
+    def tfidf_vocabulary_size(self) -> int:
+        """Return the number of unique terms in the active TF-IDF vocabulary."""
+        if self._tfidf_vectorizer is not None and hasattr(self._tfidf_vectorizer, "vocabulary_"):
+            return len(self._tfidf_vectorizer.vocabulary_)
+        return 0
+
     def __len__(self) -> int:
         """Return the number of stored vectors."""
         return self.total_vectors
 
+    def _rebuild_tfidf_index(self) -> None:
+        """Fit TF-IDF on active document chunks and construct sparse matrix representation.
+
+        Safely handles empty collections, texts with only stopwords or punctuation,
+        and ensures strict row alignment with self._records.
+        """
+        if not self._records:
+            self._tfidf_vectorizer = None
+            self._tfidf_matrix = None
+            return
+
+        corpus = [rec.get("text", "") for rec in self._records]
+        has_content = any(t and t.strip() for t in corpus)
+        if not has_content:
+            self._tfidf_vectorizer = None
+            self._tfidf_matrix = None
+            return
+
+        try:
+            vectorizer = TfidfVectorizer(
+                token_pattern=r"(?u)\b\w+\b",
+                lowercase=True,
+                stop_words="english",
+                sublinear_tf=True,
+                norm="l2",
+            )
+            matrix = vectorizer.fit_transform(corpus)
+        except ValueError:
+            # If all tokens were English stopwords, retry without stop word filtering
+            try:
+                vectorizer = TfidfVectorizer(
+                    token_pattern=r"(?u)\b\w+\b",
+                    lowercase=True,
+                    stop_words=None,
+                    sublinear_tf=True,
+                    norm="l2",
+                )
+                matrix = vectorizer.fit_transform(corpus)
+            except ValueError:
+                self._tfidf_vectorizer = None
+                self._tfidf_matrix = None
+                return
+
+        self._tfidf_vectorizer = vectorizer
+        self._tfidf_matrix = matrix
+
     def clear(self) -> None:
-        """Reset the FAISS index and clear all stored chunk metadata and ID mappings."""
+        """Reset the FAISS index, clear stored chunk metadata, and purge TF-IDF indices."""
         self._index.reset()
         self._records.clear()
         self._chunk_ids.clear()
+        self._stored_embeddings.clear()
+        self._tfidf_vectorizer = None
+        self._tfidf_matrix = None
 
     def has_chunk(self, chunk_id: str) -> bool:
         """Check whether a chunk_id is already present in the index.
@@ -306,10 +377,12 @@ class FAISSVectorStore:
                 "metadata": copy.deepcopy(metadata),
             })
 
-        # Atomic commit: All validations passed; add to FAISS index and local records
+        # Atomic commit: All validations passed; add to FAISS index, local records, and rebuild TF-IDF
         self._index.add(validated_vectors)
+        self._stored_embeddings.extend(list(validated_vectors))
         self._records.extend(validated_records)
         self._chunk_ids.update(batch_ids)
+        self._rebuild_tfidf_index()
 
         return len(validated_records)
 
@@ -409,6 +482,386 @@ class FAISSVectorStore:
             })
 
         return results
+
+    def delete_chunk(self, chunk_id: str) -> bool:
+        """Delete a single chunk by chunk_id and synchronize FAISS and TF-IDF indices.
+
+        Args:
+            chunk_id: String identifier of the chunk to remove.
+
+        Returns:
+            True if the chunk was located and removed, False otherwise.
+        """
+        if not isinstance(chunk_id, str) or chunk_id not in self._chunk_ids:
+            return False
+
+        target_idx: Optional[int] = None
+        for idx, rec in enumerate(self._records):
+            if rec["chunk_id"] == chunk_id:
+                target_idx = idx
+                break
+
+        if target_idx is None:
+            return False
+
+        del self._records[target_idx]
+        del self._stored_embeddings[target_idx]
+        self._chunk_ids.remove(chunk_id)
+
+        # Rebuild FAISS index from remaining embeddings
+        self._index.reset()
+        if self._stored_embeddings:
+            stacked = np.ascontiguousarray(np.stack(self._stored_embeddings), dtype=np.float32)
+            self._index.add(stacked)
+
+        # Rebuild TF-IDF index
+        self._rebuild_tfidf_index()
+        return True
+
+    def delete_chunks_by_document(self, filename: str) -> int:
+        """Delete all chunks belonging to a document and synchronize FAISS and TF-IDF indices.
+
+        Args:
+            filename: Target document filename (e.g. 'security_protocol.txt').
+
+        Returns:
+            Number of chunks successfully removed.
+        """
+        if not filename or not isinstance(filename, str):
+            return 0
+
+        target_name = Path(filename).name.lower()
+        target_stem = Path(filename).stem.lower()
+
+        keep_records: List[Dict[str, Any]] = []
+        keep_embeddings: List[np.ndarray] = []
+        keep_ids: Set[str] = set()
+        deleted_count = 0
+
+        for rec, emb in zip(self._records, self._stored_embeddings):
+            rec_meta = rec.get("metadata") or {}
+            rec_file = str(rec_meta.get("filename") or "").lower()
+            rec_cid = str(rec.get("chunk_id") or "").lower()
+
+            is_match = (
+                rec_file == target_name
+                or rec_file.endswith(f"/{target_name}")
+                or rec_file.endswith(f"\\{target_name}")
+                or rec_cid.startswith(f"{target_name}_")
+                or rec_cid.startswith(f"{target_stem}_")
+            )
+
+            if is_match:
+                deleted_count += 1
+            else:
+                keep_records.append(rec)
+                keep_embeddings.append(emb)
+                keep_ids.add(rec["chunk_id"])
+
+        if deleted_count == 0:
+            return 0
+
+        self._records = keep_records
+        self._stored_embeddings = keep_embeddings
+        self._chunk_ids = keep_ids
+
+        # Rebuild FAISS index
+        self._index.reset()
+        if self._stored_embeddings:
+            stacked = np.ascontiguousarray(np.stack(self._stored_embeddings), dtype=np.float32)
+            self._index.add(stacked)
+
+        # Rebuild TF-IDF index
+        self._rebuild_tfidf_index()
+        return deleted_count
+
+    def search_tfidf(
+        self,
+        query: str,
+        top_k: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """Retrieve chunks ranked by TF-IDF sparse vector cosine similarity.
+
+        Args:
+            query: User query string to match against chunk vocabulary.
+            top_k: Maximum number of chunks to return (default 5).
+
+        Returns:
+            List of chunk result dictionaries ordered by descending similarity score.
+
+        Raises:
+            ValueError: If top_k is not a positive integer.
+            TypeError: If query is not a string or top_k is not an int.
+        """
+        if not isinstance(top_k, int) or isinstance(top_k, bool) or top_k <= 0:
+            raise ValueError(f"top_k must be a positive integer, got: {top_k!r}")
+
+        if query is None:
+            raise ValueError("query cannot be None")
+        if not isinstance(query, str):
+            raise TypeError(f"query must be a string, got: {type(query).__name__}")
+
+        cleaned_query = query.strip()
+        if not cleaned_query:
+            return []
+
+        if self.is_empty or self._tfidf_vectorizer is None or self._tfidf_matrix is None:
+            return []
+
+        try:
+            q_vec = self._tfidf_vectorizer.transform([cleaned_query])
+        except Exception:
+            return []
+
+        if q_vec.nnz == 0:
+            return []
+
+        sim_matrix = self._tfidf_matrix.dot(q_vec.T)
+        scores = sim_matrix.toarray().ravel()
+
+        matching_indices = np.where(scores > 0.0)[0]
+        if len(matching_indices) == 0:
+            return []
+
+        sorted_order = np.argsort(-scores[matching_indices])
+        top_indices = matching_indices[sorted_order][:top_k]
+
+        results: List[Dict[str, Any]] = []
+        for idx in top_indices:
+            rec = self._records[idx]
+            results.append({
+                "chunk_id": rec["chunk_id"],
+                "text": rec["text"],
+                "metadata": copy.deepcopy(rec["metadata"]),
+                "similarity_score": float(scores[idx]),
+            })
+
+        return results
+
+    def hybrid_search(
+        self,
+        query_text: str,
+        query_embedding: Optional[Union[np.ndarray, List[float]]] = None,
+        top_k: int = 5,
+        dense_weight: float = 0.6,
+        tfidf_weight: float = 0.4,
+        rrf_k: int = 60,
+    ) -> List[Dict[str, Any]]:
+        """Retrieve chunks using hybrid dense semantic (FAISS) and sparse keyword (TF-IDF) search.
+
+        Combines dense semantic retrieval and sparse TF-IDF keyword retrieval using
+        Reciprocal Rank Fusion (RRF) with normalized scoring:
+            RRF_score(d) = dense_weight * (1 / (rrf_k + rank_dense)) + tfidf_weight * (1 / (rrf_k + rank_tfidf))
+            normalized_score = RRF_score(d) / max_possible_rrf
+
+        Preserves exact citation metadata, deduplicates by stable chunk_id, and decorates
+        metadata with dense_score, tfidf_score, and retrieval_source.
+
+        Args:
+            query_text: User question string.
+            query_embedding: Optional precomputed dense embedding vector for the query.
+            top_k: Maximum number of chunks to return (default 5).
+            dense_weight: Weight assigned to dense semantic rank (default 0.6).
+            tfidf_weight: Weight assigned to sparse TF-IDF rank (default 0.4).
+            rrf_k: Constant smoothing parameter for reciprocal rank fusion (default 60).
+
+        Returns:
+            List of deduplicated, hybrid-ranked chunk dictionaries.
+
+        Raises:
+            ValueError: If top_k <= 0, rrf_k <= 0, weights negative, or all inputs empty.
+        """
+        if not isinstance(top_k, int) or isinstance(top_k, bool) or top_k <= 0:
+            raise ValueError(f"top_k must be a positive integer, got: {top_k!r}")
+        if not isinstance(rrf_k, int) or isinstance(rrf_k, bool) or rrf_k <= 0:
+            raise ValueError(f"rrf_k must be a positive integer, got: {rrf_k!r}")
+        if dense_weight < 0.0 or tfidf_weight < 0.0 or (dense_weight + tfidf_weight <= 0.0):
+            raise ValueError("dense_weight and tfidf_weight must be non-negative and sum to > 0")
+
+        if self.is_empty:
+            return []
+
+        cleaned_query = query_text.strip() if isinstance(query_text, str) else ""
+
+        # Retrieve candidate pools
+        candidate_pool_size = max(top_k * 3, 20)
+        dense_results: List[Dict[str, Any]] = []
+        if query_embedding is not None:
+            dense_results = self.search(query_embedding=query_embedding, top_k=candidate_pool_size)
+
+        tfidf_results: List[Dict[str, Any]] = []
+        if cleaned_query:
+            tfidf_results = self.search_tfidf(query=cleaned_query, top_k=candidate_pool_size)
+
+        if not dense_results and not tfidf_results:
+            return []
+
+        # Single retrieval path handling
+        if not tfidf_results and dense_results:
+            results: List[Dict[str, Any]] = []
+            for res in dense_results[:top_k]:
+                item = copy.deepcopy(res)
+                item["metadata"]["retrieval_source"] = "dense"
+                item["metadata"]["dense_score"] = float(item["similarity_score"])
+                results.append(item)
+            return results
+
+        if not dense_results and tfidf_results:
+            results = []
+            for res in tfidf_results[:top_k]:
+                item = copy.deepcopy(res)
+                item["metadata"]["retrieval_source"] = "tfidf"
+                item["metadata"]["tfidf_score"] = float(item["similarity_score"])
+                results.append(item)
+            return results
+
+        # Reciprocal Rank Fusion (RRF)
+        dense_map = {item["chunk_id"]: (rank, item) for rank, item in enumerate(dense_results, 1)}
+        tfidf_map = {item["chunk_id"]: (rank, item) for rank, item in enumerate(tfidf_results, 1)}
+
+        all_chunk_ids = list(dict.fromkeys(
+            [it["chunk_id"] for it in dense_results] + [it["chunk_id"] for it in tfidf_results]
+        ))
+
+        max_possible_rrf = (dense_weight / (rrf_k + 1)) + (tfidf_weight / (rrf_k + 1))
+
+        scored_candidates: List[Dict[str, Any]] = []
+        for cid in all_chunk_ids:
+            dense_entry = dense_map.get(cid)
+            tfidf_entry = tfidf_map.get(cid)
+
+            score = 0.0
+            if dense_entry is not None:
+                dense_rank = dense_entry[0]
+                score += dense_weight * (1.0 / (rrf_k + dense_rank))
+            if tfidf_entry is not None:
+                tfidf_rank = tfidf_entry[0]
+                score += tfidf_weight * (1.0 / (rrf_k + tfidf_rank))
+
+            normalized_score = (score / max_possible_rrf) if max_possible_rrf > 0 else 0.0
+            normalized_score = min(1.0, max(0.0, normalized_score))
+
+            base_item = dense_entry[1] if dense_entry is not None else tfidf_entry[1]
+            meta = copy.deepcopy(base_item["metadata"])
+            meta["retrieval_source"] = "hybrid" if (dense_entry and tfidf_entry) else ("dense" if dense_entry else "tfidf")
+            if dense_entry is not None:
+                meta["dense_score"] = float(dense_entry[1]["similarity_score"])
+                meta["dense_rank"] = dense_entry[0]
+            if tfidf_entry is not None:
+                meta["tfidf_score"] = float(tfidf_entry[1]["similarity_score"])
+                meta["tfidf_rank"] = tfidf_entry[0]
+
+            scored_candidates.append({
+                "chunk_id": cid,
+                "text": base_item["text"],
+                "metadata": meta,
+                "similarity_score": round(float(normalized_score), 6),
+            })
+
+        scored_candidates.sort(key=lambda x: x["similarity_score"], reverse=True)
+        return scored_candidates[:top_k]
+
+    def as_retriever(
+        self,
+        embedding_service: Any,
+        top_k: int = 5,
+        similarity_threshold: Optional[float] = None,
+        retrieval_mode: str = "hybrid",
+        dense_weight: float = 0.6,
+        tfidf_weight: float = 0.4,
+        rrf_k: int = 60,
+    ) -> "FAISSRetrieverAdapter":
+        """Return a LangChain-compatible BaseRetriever adapter for this vector store."""
+        return FAISSRetrieverAdapter(
+            vector_store=self,
+            embedding_service=embedding_service,
+            top_k=top_k,
+            similarity_threshold=similarity_threshold,
+            retrieval_mode=retrieval_mode,
+            dense_weight=dense_weight,
+            tfidf_weight=tfidf_weight,
+            rrf_k=rrf_k,
+        )
+
+
+# ============================================================================
+# LangChain Retriever Adapter Implementation
+# ============================================================================
+
+try:
+    from langchain_core.callbacks import CallbackManagerForRetrieverRun
+    from langchain_core.documents import Document as LangChainDocument
+    from langchain_core.retrievers import BaseRetriever as BaseLangChainRetriever
+except ImportError:
+    class LangChainDocument:  # type: ignore[no-redef]
+        def __init__(self, page_content: str, metadata: Optional[Dict[str, Any]] = None) -> None:
+            self.page_content = page_content
+            self.metadata = metadata or {}
+
+    class BaseLangChainRetriever:  # type: ignore[no-redef]
+        pass
+    CallbackManagerForRetrieverRun = Any  # type: ignore[assignment,misc]
+
+
+class FAISSRetrieverAdapter(BaseLangChainRetriever):
+    """LangChain-compatible BaseRetriever adapter delegating to FAISSVectorStore."""
+
+    vector_store: Any
+    embedding_service: Any
+    top_k: int = 5
+    similarity_threshold: Optional[float] = None
+    retrieval_mode: str = "hybrid"
+    dense_weight: float = 0.6
+    tfidf_weight: float = 0.4
+    rrf_k: int = 60
+
+    def _get_relevant_documents(
+        self,
+        query: str,
+        *,
+        run_manager: Optional[Any] = None,
+    ) -> List[LangChainDocument]:
+        """Retrieve documents relevant to the query from the underlying FAISSVectorStore."""
+        if self.vector_store.is_empty:
+            return []
+
+        if self.retrieval_mode == "hybrid" and hasattr(self.vector_store, "hybrid_search"):
+            query_vec = None
+            if self.embedding_service is not None:
+                try:
+                    query_vec = self.embedding_service.embed_text(query)
+                except Exception:
+                    query_vec = None
+            raw_chunks = self.vector_store.hybrid_search(
+                query_text=query,
+                query_embedding=query_vec,
+                top_k=self.top_k,
+                dense_weight=self.dense_weight,
+                tfidf_weight=self.tfidf_weight,
+                rrf_k=self.rrf_k,
+            )
+        elif self.retrieval_mode == "tfidf" and hasattr(self.vector_store, "search_tfidf"):
+            raw_chunks = self.vector_store.search_tfidf(query=query, top_k=self.top_k)
+        else:
+            query_vec = self.embedding_service.embed_text(query)
+            raw_chunks = self.vector_store.search(query_vec, top_k=self.top_k)
+
+        if self.similarity_threshold is not None:
+            raw_chunks = [
+                c for c in raw_chunks
+                if c.get("similarity_score", -1.0) >= self.similarity_threshold
+            ]
+
+        docs: List[LangChainDocument] = []
+        for c in raw_chunks:
+            meta = copy.deepcopy(c.get("metadata", {}))
+            meta["chunk_id"] = c.get("chunk_id")
+            meta["similarity_score"] = c.get("similarity_score")
+            docs.append(LangChainDocument(
+                page_content=c.get("text", ""),
+                metadata=meta,
+            ))
+        return docs
 
 
 def create_vector_store(

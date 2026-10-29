@@ -17,6 +17,8 @@ from enum import Enum
 import math
 import re
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
+import numpy as np
+from sklearn.feature_extraction.text import TfidfVectorizer
 
 from app.rag_pipeline import BaseLLMClient
 
@@ -190,15 +192,16 @@ def tokenize_words(text: str) -> List[str]:
 # ============================================================================
 
 class ExtractiveSummarizer:
-    """Local, offline extractive summarizer using frequency-weighted sentence ranking.
+    """Local, offline extractive summarizer using genuine TF-IDF sentence salience.
 
     Features:
-    - Calculates word frequency distribution (TF-style salience) excluding stopwords.
-    - Scores sentences by summing normalized word salience.
+    - Fits scikit-learn TfidfVectorizer over document sentences with sublinear TF scaling.
+    - Computes sentence-to-document centroid cosine similarity in sparse TF-IDF space.
+    - Combines centroid semantic alignment with length-normalized term salience.
     - Applies positional weighting (first sentence and introductory sentences receive a boost).
-    - Normalizes by sentence length to avoid bias toward excessively long sentences.
     - Preserves chronological sequence in the generated summary.
-    - Completely deterministic and fast (<1ms).
+    - Handles short documents, repeated terms, uncommon terms, and all-stopword inputs safely.
+    - Completely deterministic and fast.
     """
 
     def summarize(
@@ -207,7 +210,7 @@ class ExtractiveSummarizer:
         summary_type: str = DEFAULT_SUMMARY_TYPE,
         max_sentences: Optional[int] = None,
     ) -> SummaryResult:
-        """Generate an extractive summary of text.
+        """Generate an extractive summary of text using TF-IDF sentence salience.
 
         Args:
             text: Input text string.
@@ -237,32 +240,60 @@ class ExtractiveSummarizer:
                 status="success",
             )
 
-        # Word frequency analysis
-        words = tokenize_words(cleaned_text)
-        freq_map: Dict[str, int] = {}
-        max_freq = 1
-        for w in words:
-            if w not in STOPWORDS and len(w) > 1 and not w.isdigit():
-                freq_map[w] = freq_map.get(w, 0) + 1
-                if freq_map[w] > max_freq:
-                    max_freq = freq_map[w]
+        # Genuine TF-IDF vectorization across sentences
+        try:
+            vectorizer = TfidfVectorizer(
+                token_pattern=r"(?u)\b\w+\b",
+                lowercase=True,
+                stop_words="english",
+                sublinear_tf=True,
+                norm="l2",
+            )
+            tfidf_matrix = vectorizer.fit_transform(sentences)
+        except ValueError:
+            # Fallback if text contains only stopwords or punctuation
+            try:
+                vectorizer = TfidfVectorizer(
+                    token_pattern=r"(?u)\b\w+\b",
+                    lowercase=True,
+                    stop_words=None,
+                    sublinear_tf=True,
+                    norm="l2",
+                )
+                tfidf_matrix = vectorizer.fit_transform(sentences)
+            except Exception:
+                tfidf_matrix = None
 
-        # Normalized word weights
-        word_weights = {w: count / max_freq for w, count in freq_map.items()}
+        if tfidf_matrix is not None and tfidf_matrix.shape[1] > 0:
+            # 1. Document centroid in TF-IDF space
+            centroid = np.asarray(tfidf_matrix.mean(axis=0)).ravel()
+            centroid_norm = float(np.linalg.norm(centroid))
+            if centroid_norm > 0:
+                centroid = centroid / centroid_norm
+            centroid_sims = (tfidf_matrix * centroid).ravel()
 
-        # Sentence scoring
+            # 2. Length-normalized TF-IDF term salience
+            sum_tfidf = np.asarray(tfidf_matrix.sum(axis=1)).ravel()
+            sentence_word_lens = [
+                math.sqrt(max(1, len(tokenize_words(s)))) for s in sentences
+            ]
+            term_salience = sum_tfidf / sentence_word_lens
+            max_sal = float(np.max(term_salience)) if len(term_salience) > 0 and np.max(term_salience) > 0 else 1.0
+
+            # 3. Combined TF-IDF score
+            base_scores = 0.6 * centroid_sims + 0.4 * (term_salience / max_sal)
+        else:
+            # Safe fallback if vectorization yields 0 features
+            base_scores = np.ones(total_sentences, dtype=float)
+
+        # Sentence scoring with positional weighting
         scored_sentences: List[Tuple[int, str, float]] = []
         for idx, sentence in enumerate(sentences):
             sent_words = tokenize_words(sentence)
             if not sent_words:
                 continue
 
-            # Base score from word weights
-            score = sum(word_weights.get(w, 0.0) for w in sent_words)
-
-            # Length normalization (dampen bias for run-on sentences)
-            norm_len = math.sqrt(len(sent_words)) if len(sent_words) > 0 else 1.0
-            score = score / norm_len
+            score = float(base_scores[idx])
 
             # Positional weighting: First sentence gets 1.35x boost, second gets 1.15x
             if idx == 0:

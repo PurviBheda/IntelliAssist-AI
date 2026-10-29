@@ -227,6 +227,41 @@ class EmbeddingService:
 
         return embedded_chunks
 
+    def as_langchain_embeddings(self) -> "LangChainEmbeddingsAdapter":
+        """Return a LangChain-compatible Embeddings adapter wrapping this service."""
+        return LangChainEmbeddingsAdapter(self)
+
+
+# ============================================================================
+# LangChain Adapter Implementation
+# ============================================================================
+
+try:
+    from langchain_core.embeddings import Embeddings as BaseLangChainEmbeddings
+except ImportError:
+    class BaseLangChainEmbeddings:  # type: ignore[no-redef]
+        """Fallback base class when langchain-core is not installed."""
+        pass
+
+
+class LangChainEmbeddingsAdapter(BaseLangChainEmbeddings):
+    """LangChain-compatible Embeddings adapter delegating to EmbeddingService."""
+
+    def __init__(self, embedding_service: EmbeddingService) -> None:
+        self.embedding_service = embedding_service
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        """Embed search documents using the underlying EmbeddingService."""
+        if not texts:
+            return []
+        arr = self.embedding_service.embed_texts(texts)
+        return arr.tolist()
+
+    def embed_query(self, text: str) -> List[float]:
+        """Embed query text using the underlying EmbeddingService."""
+        arr = self.embedding_service.embed_text(text)
+        return arr.tolist()
+
 
 # Global singleton instance for module-level convenience functions
 _default_service: Optional[EmbeddingService] = None

@@ -38,7 +38,22 @@ htmlcov/
 .mypy_cache/
 .ruff_cache/
 
-# SQLite databases
+# SQLite databases and journal files
 *.db
+*.db-journal
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
+
+# Document uploads and runtime data
+backend/data/uploads/*
+!backend/data/uploads/.gitkeep
+backend/data/*.db*
+backend/data/*.sqlite*
+data/uploads/*
+!data/uploads/.gitkeep
+
+# Evaluation results and temporary folders
+backend/evaluation_results/
+.pytest_temp/
