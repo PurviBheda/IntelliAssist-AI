@@ -395,3 +395,244 @@ def test_langchain_retriever_hybrid_mode(populated_hybrid_store: FAISSVectorStor
     assert "chunk_id" in top_doc.metadata
     assert "similarity_score" in top_doc.metadata
     assert top_doc.metadata["similarity_score"] > 0.0
+
+
+
+# ============================================================================
+# 7. Regression & Edge-Case Verification Tests
+# ============================================================================
+
+def test_positive_dense_outranks_orthogonal_document_when_dense_weight_dominates(
+    populated_hybrid_store: FAISSVectorStore,
+) -> None:
+    """Positive dense similarity outranks an orthogonal document when dense weight dominates."""
+    # security has cosine similarity 1.0, biology has 0.0
+    dense_target = _make_unit_vector(384, 0)
+    # biology has TF-IDF match, security has 0
+    sparse_text = "chloroplasts photosynthesis"
+
+    results = populated_hybrid_store.hybrid_search(
+        query_text=sparse_text,
+        query_embedding=dense_target,
+        top_k=2,
+        dense_weight=0.9,
+        tfidf_weight=0.1,
+    )
+    assert len(results) == 2
+    assert results[0]["chunk_id"] == "security.pdf_page_1_chunk_1"
+    assert results[1]["chunk_id"] == "biology.docx_page_1_chunk_1"
+    assert results[0]["similarity_score"] > results[1]["similarity_score"]
+
+
+def test_zero_similarity_candidates_do_not_receive_dense_rrf_contribution(
+    populated_hybrid_store: FAISSVectorStore,
+) -> None:
+    """Zero-similarity candidates do not receive dense RRF contribution when positive dense candidates exist."""
+    dense_target = _make_unit_vector(384, 0)  # security is 1.0, biology is 0.0, quantum is 0.0
+    sparse_text = "chloroplasts photosynthesis"  # biology matches TF-IDF
+
+    results = populated_hybrid_store.hybrid_search(
+        query_text=sparse_text,
+        query_embedding=dense_target,
+        top_k=3,
+        dense_weight=0.6,
+        tfidf_weight=0.4,
+    )
+    # biology was orthogonal to query (dense score 0.0) while security had 1.0
+    biology_res = next(r for r in results if r["chunk_id"] == "biology.docx_page_1_chunk_1")
+    # Biology must be recognized as sparse-only contribution, not hybrid
+    assert biology_res["metadata"]["retrieval_source"] == "tfidf"
+    assert "dense_rank" not in biology_res["metadata"]
+
+
+def test_negative_similarity_candidates_available_for_fallback() -> None:
+    """Negative-similarity candidates remain available for fallback without being discarded."""
+    store = FAISSVectorStore(dimension=384, normalize_vectors=True)
+    v_pos = _make_unit_vector(384, 0)
+    v_neg = -1.0 * _make_unit_vector(384, 0)
+    v_orth = _make_unit_vector(384, 1)
+
+    chunks = [
+        {
+            "chunk_id": "pos_doc_chunk_1",
+            "text": "Alpha positive document with distinct concepts.",
+            "metadata": {"filename": "pos.txt", "page_number": 1},
+        },
+        {
+            "chunk_id": "neg_doc_chunk_1",
+            "text": "Beta inverted document with opposite concepts.",
+            "metadata": {"filename": "neg.txt", "page_number": 1},
+        },
+        {
+            "chunk_id": "orth_doc_chunk_1",
+            "text": "Gamma orthogonal document with unrelated concepts.",
+            "metadata": {"filename": "orth.txt", "page_number": 1},
+        },
+    ]
+    store.add_chunks(chunks, [v_pos, v_neg, v_orth])
+
+    # Query embedding aligned with v_pos:
+    # pos_doc has sim +1.0, orth_doc has sim 0.0, neg_doc has sim -1.0
+    # Query text only matches pos_doc keyword "Alpha"
+    results = store.hybrid_search(
+        query_text="Alpha",
+        query_embedding=v_pos,
+        top_k=3,
+        dense_weight=0.7,
+        tfidf_weight=0.3,
+    )
+
+    # All 3 chunks must be returned (including the negative similarity chunk)
+    assert len(results) == 3
+    result_ids = [r["chunk_id"] for r in results]
+    assert "neg_doc_chunk_1" in result_ids
+    assert results[0]["chunk_id"] == "pos_doc_chunk_1"
+
+    # Find negative chunk in fallback and verify metadata
+    neg_item = next(r for r in results if r["chunk_id"] == "neg_doc_chunk_1")
+    assert neg_item["metadata"]["retrieval_source"] == "dense"
+    assert pytest.approx(neg_item["metadata"]["dense_score"], abs=1e-4) == -1.0
+    # Normalized hybrid similarity score must remain bounded in [0.0, 1.0]
+    assert 0.0 <= neg_item["similarity_score"] <= 1.0
+
+
+def test_fewer_than_top_k_positive_dense_matches() -> None:
+    """Fewer than top_k positive dense matches properly fill from remaining candidates."""
+    store = FAISSVectorStore(dimension=384, normalize_vectors=True)
+    # 2 positive vectors (sim > 0), 2 negative vectors (sim < 0)
+    q_vec = _make_unit_vector(384, 0)
+    v1 = _make_unit_vector(384, 0)  # sim 1.0
+    v2 = (_make_unit_vector(384, 0) + _make_unit_vector(384, 1)) / np.sqrt(2)  # sim ~0.707
+    v3 = -1.0 * _make_unit_vector(384, 0)  # sim -1.0
+    v4 = (-1.0 * _make_unit_vector(384, 0) + _make_unit_vector(384, 2)) / np.sqrt(2)  # sim ~ -0.707
+
+    chunks = [
+        {"chunk_id": f"chunk_{i}", "text": f"Document text {i} with distinct terms", "metadata": {"filename": f"f{i}.txt", "page_number": 1}}
+        for i in range(1, 5)
+    ]
+    store.add_chunks(chunks, [v1, v2, v3, v4])
+
+    # Only 2 chunks have positive dense similarity; top_k=4 requested
+    results = store.hybrid_search(
+        query_text="unmatched_keyword_nowhere",
+        query_embedding=q_vec,
+        top_k=4,
+    )
+    # Must return all 4 candidates without discarding negative ones
+    assert len(results) == 4
+    res_ids = [r["chunk_id"] for r in results]
+    assert len(set(res_ids)) == 4
+    # Top 2 must be positive matches in ranked order
+    assert res_ids[0] == "chunk_1"
+    assert res_ids[1] == "chunk_2"
+
+
+def test_no_positive_dense_matches_uses_original_ranked_order() -> None:
+    """When no positive dense similarities exist, candidates are used in original ranked order."""
+    store = FAISSVectorStore(dimension=384, normalize_vectors=True)
+    # Query vector is along axis 0
+    q_vec = _make_unit_vector(384, 0)
+
+    # All vectors have negative dot product with q_vec:
+    # v1 has -0.2, v2 has -0.5, v3 has -0.9
+    v1 = -0.2 * _make_unit_vector(384, 0) + np.sqrt(1 - 0.2**2) * _make_unit_vector(384, 1)
+    v2 = -0.5 * _make_unit_vector(384, 0) + np.sqrt(1 - 0.5**2) * _make_unit_vector(384, 2)
+    v3 = -0.9 * _make_unit_vector(384, 0) + np.sqrt(1 - 0.9**2) * _make_unit_vector(384, 3)
+
+    chunks = [
+        {"chunk_id": "c1_least_neg", "text": "Least negative candidate", "metadata": {"filename": "c1.txt", "page_number": 1}},
+        {"chunk_id": "c2_mid_neg", "text": "Middle negative candidate", "metadata": {"filename": "c2.txt", "page_number": 1}},
+        {"chunk_id": "c3_most_neg", "text": "Most negative candidate", "metadata": {"filename": "c3.txt", "page_number": 1}},
+    ]
+    store.add_chunks(chunks, [v1, v2, v3])
+
+    results = store.hybrid_search(
+        query_text="nomatch",
+        query_embedding=q_vec,
+        top_k=3,
+        dense_weight=0.7,
+        tfidf_weight=0.3,
+    )
+    assert len(results) == 3
+    # Ordered by dense similarity: -0.2 > -0.5 > -0.9
+    assert results[0]["chunk_id"] == "c1_least_neg"
+    assert results[1]["chunk_id"] == "c2_mid_neg"
+    assert results[2]["chunk_id"] == "c3_most_neg"
+
+
+def test_empty_tfidf_results_handles_cleanly(populated_hybrid_store: FAISSVectorStore) -> None:
+    """Empty TF-IDF results safely fall back to dense retrieval."""
+    q_vec = _make_unit_vector(384, 0)
+    # Non-existent terms in vocabulary
+    results = populated_hybrid_store.hybrid_search(
+        query_text="zzzyyyxxx nonesuch",
+        query_embedding=q_vec,
+        top_k=2,
+    )
+    assert len(results) == 2
+    assert results[0]["chunk_id"] == "security.pdf_page_1_chunk_1"
+    assert results[0]["metadata"]["retrieval_source"] == "dense"
+
+
+def test_duplicate_prevention_across_fusion_and_fallback(
+    populated_hybrid_store: FAISSVectorStore,
+) -> None:
+    """Hybrid search guarantees unique documents without duplicating chunk_ids."""
+    q_vec = _make_unit_vector(384, 0)
+    # Query text matching chunk 0 (security) and chunk 2 (biology)
+    results = populated_hybrid_store.hybrid_search(
+        query_text="authentication chloroplasts",
+        query_embedding=q_vec,
+        top_k=3,
+    )
+    assert len(results) == 3
+    cids = [r["chunk_id"] for r in results]
+    assert len(cids) == len(set(cids)), "Duplicate chunk IDs found in hybrid search results"
+
+
+def test_configurable_dense_and_tfidf_weights_spectrum(
+    populated_hybrid_store: FAISSVectorStore,
+) -> None:
+    """Configurable weights smoothly tilt preference between dense and TF-IDF."""
+    dense_vec = _make_unit_vector(384, 0)  # security
+    sparse_query = "chloroplasts photosynthesis"  # biology
+
+    # Dense dominant: security rank 1
+    res_dense = populated_hybrid_store.hybrid_search(
+        query_text=sparse_query,
+        query_embedding=dense_vec,
+        top_k=2,
+        dense_weight=0.99,
+        tfidf_weight=0.01,
+    )
+    assert res_dense[0]["chunk_id"] == "security.pdf_page_1_chunk_1"
+
+    # TF-IDF dominant: biology rank 1
+    res_tfidf = populated_hybrid_store.hybrid_search(
+        query_text=sparse_query,
+        query_embedding=dense_vec,
+        top_k=2,
+        dense_weight=0.01,
+        tfidf_weight=0.99,
+    )
+    assert res_tfidf[0]["chunk_id"] == "biology.docx_page_1_chunk_1"
+
+
+def test_respects_top_k_parameter(populated_hybrid_store: FAISSVectorStore) -> None:
+    """Hybrid search respects requested top_k boundary exactly."""
+    q_vec = _make_unit_vector(384, 0)
+    for k in (1, 2, 3):
+        res = populated_hybrid_store.hybrid_search(
+            query_text="authentication",
+            query_embedding=q_vec,
+            top_k=k,
+        )
+        assert len(res) == k
+
+    # Requesting more than total available chunks returns exactly total chunks
+    res_overflow = populated_hybrid_store.hybrid_search(
+        query_text="authentication",
+        query_embedding=q_vec,
+        top_k=100,
+    )
+    assert len(res_overflow) == 3

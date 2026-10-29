@@ -716,19 +716,40 @@ class FAISSVectorStore:
             return results
 
         # Reciprocal Rank Fusion (RRF)
-        dense_map = {item["chunk_id"]: (rank, item) for rank, item in enumerate(dense_results, 1)}
-        tfidf_map = {item["chunk_id"]: (rank, item) for rank, item in enumerate(tfidf_results, 1)}
+        # Separate dense RRF eligibility from fallback candidate availability:
+        # 1. When positive dense similarities exist, only positive-similarity candidates
+        #    receive a dense RRF contribution. Zero and negative similarity candidates
+        #    do not receive a dense RRF contribution so they cannot outrank positive matches.
+        # 2. When there are no positive dense candidates, all available dense candidates
+        #    are eligible in their original ranked order.
+        # 3. Non-eligible candidates are preserved as potential fallback results.
+        dense_rrf_map: Dict[str, Tuple[int, Dict[str, Any]]] = {}
+        has_positive_dense = any(item.get("similarity_score", 0.0) > 0.0 for item in dense_results)
 
-        all_chunk_ids = list(dict.fromkeys(
-            [it["chunk_id"] for it in dense_results] + [it["chunk_id"] for it in tfidf_results]
+        if has_positive_dense:
+            dense_eligible = [item for item in dense_results if item.get("similarity_score", 0.0) > 0.0]
+            for rank, item in enumerate(dense_eligible, 1):
+                dense_rrf_map[item["chunk_id"]] = (rank, item)
+        else:
+            for rank, item in enumerate(dense_results, 1):
+                dense_rrf_map[item["chunk_id"]] = (rank, item)
+
+        tfidf_rrf_map = {item["chunk_id"]: (rank, item) for rank, item in enumerate(tfidf_results, 1)}
+
+        dense_lookup = {item["chunk_id"]: item for item in dense_results}
+        tfidf_lookup = {item["chunk_id"]: item for item in tfidf_results}
+
+        # Candidates with an active RRF contribution from dense, sparse, or both
+        all_rrf_ids = list(dict.fromkeys(
+            list(dense_rrf_map.keys()) + list(tfidf_rrf_map.keys())
         ))
 
         max_possible_rrf = (dense_weight / (rrf_k + 1)) + (tfidf_weight / (rrf_k + 1))
 
         scored_candidates: List[Dict[str, Any]] = []
-        for cid in all_chunk_ids:
-            dense_entry = dense_map.get(cid)
-            tfidf_entry = tfidf_map.get(cid)
+        for cid in all_rrf_ids:
+            dense_entry = dense_rrf_map.get(cid)
+            tfidf_entry = tfidf_rrf_map.get(cid)
 
             score = 0.0
             if dense_entry is not None:
@@ -741,12 +762,22 @@ class FAISSVectorStore:
             normalized_score = (score / max_possible_rrf) if max_possible_rrf > 0 else 0.0
             normalized_score = min(1.0, max(0.0, normalized_score))
 
-            base_item = dense_entry[1] if dense_entry is not None else tfidf_entry[1]
+            base_item = (
+                dense_entry[1]
+                if dense_entry is not None
+                else (tfidf_entry[1] if tfidf_entry is not None else dense_lookup[cid])
+            )
             meta = copy.deepcopy(base_item["metadata"])
-            meta["retrieval_source"] = "hybrid" if (dense_entry and tfidf_entry) else ("dense" if dense_entry else "tfidf")
+            meta["retrieval_source"] = (
+                "hybrid" if (dense_entry and tfidf_entry)
+                else ("dense" if dense_entry else "tfidf")
+            )
             if dense_entry is not None:
                 meta["dense_score"] = float(dense_entry[1]["similarity_score"])
                 meta["dense_rank"] = dense_entry[0]
+            elif cid in dense_lookup:
+                meta["dense_score"] = float(dense_lookup[cid]["similarity_score"])
+
             if tfidf_entry is not None:
                 meta["tfidf_score"] = float(tfidf_entry[1]["similarity_score"])
                 meta["tfidf_rank"] = tfidf_entry[0]
@@ -759,7 +790,47 @@ class FAISSVectorStore:
             })
 
         scored_candidates.sort(key=lambda x: x["similarity_score"], reverse=True)
-        return scored_candidates[:top_k]
+        fused_results = scored_candidates[:top_k]
+        selected_ids = {item["chunk_id"] for item in fused_results}
+
+        # If fusion produces fewer than top_k unique documents, fill from remaining
+        # eligible candidates (dense candidates first in original ranked order,
+        # then remaining TF-IDF candidates) without duplicating documents.
+        if len(fused_results) < top_k:
+            for item in dense_results:
+                if len(fused_results) >= top_k:
+                    break
+                cid = item["chunk_id"]
+                if cid not in selected_ids:
+                    meta = copy.deepcopy(item["metadata"])
+                    meta["retrieval_source"] = "dense"
+                    meta["dense_score"] = float(item["similarity_score"])
+                    fused_results.append({
+                        "chunk_id": cid,
+                        "text": item["text"],
+                        "metadata": meta,
+                        "similarity_score": 0.0,
+                    })
+                    selected_ids.add(cid)
+
+            if len(fused_results) < top_k:
+                for item in tfidf_results:
+                    if len(fused_results) >= top_k:
+                        break
+                    cid = item["chunk_id"]
+                    if cid not in selected_ids:
+                        meta = copy.deepcopy(item["metadata"])
+                        meta["retrieval_source"] = "tfidf"
+                        meta["tfidf_score"] = float(item["similarity_score"])
+                        fused_results.append({
+                            "chunk_id": cid,
+                            "text": item["text"],
+                            "metadata": meta,
+                            "similarity_score": 0.0,
+                        })
+                        selected_ids.add(cid)
+
+        return fused_results
 
     def as_retriever(
         self,
