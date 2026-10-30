@@ -3,7 +3,7 @@
 Plain white main workspace with ~800px centered conversation column,
 anchored unified composer with attached [+] upload popover and [↑] send button,
 and a simple light-gray sidebar (~250px).
-Connected to the FastAPI backend via IntelliAssistApiClient.
+Connected to backend services via DirectServiceAdapter (default) or IntelliAssistApiClient (HTTP mode).
 """
 
 from __future__ import annotations
@@ -11,14 +11,16 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import sys
+from typing import Any, Union
 import uuid
 
 import streamlit as st
 
-# Ensure backend root is on sys.path for direct module resolution
-backend_dir = Path(__file__).resolve().parent.parent
-if str(backend_dir) not in sys.path:
-    sys.path.insert(0, str(backend_dir))
+# Ensure backend root is at index 0 of sys.path so 'app' package resolves to backend/app
+backend_dir = str(Path(__file__).resolve().parent.parent)
+while backend_dir in sys.path:
+    sys.path.remove(backend_dir)
+sys.path.insert(0, backend_dir)
 
 from streamlit_app.api_client import IntelliAssistApiClient
 from streamlit_app.components.chat_view import render_chat_view
@@ -236,14 +238,27 @@ st.markdown(
 
 
 # ============================================================================
-# API Client Singleton
+# Client Provider Singleton (Direct In-Process by Default / HTTP Optional)
 # ============================================================================
 
-def get_api_client() -> IntelliAssistApiClient:
-    """Initialize and retrieve the API client instance (honors session state injection for testing)."""
+def get_api_client() -> Any:
+    """Initialize and retrieve the client instance for this user session.
+
+    Defaults to in-process DirectServiceAdapter for single-process cloud or zero-cost hosting.
+    HTTP mode (IntelliAssistApiClient) can be explicitly selected by setting
+    INTELLIASSIST_CLIENT_MODE=http (or INTELLIASSIST_MODE=http) or INTELLIASSIST_API_URL.
+    Honors pre-injected session_state['_api_client'] for isolated testing.
+    """
     client = st.session_state.get("_api_client")
     if client is None:
-        client = IntelliAssistApiClient()
+        client_mode = os.getenv("INTELLIASSIST_CLIENT_MODE", os.getenv("INTELLIASSIST_MODE", "")).strip().lower()
+        if client_mode in ("http", "api", "server", "fastapi") or (
+            os.getenv("INTELLIASSIST_API_URL") and client_mode != "direct"
+        ):
+            client = IntelliAssistApiClient()
+        else:
+            from streamlit_app.direct_client import DirectServiceAdapter
+            client = DirectServiceAdapter()
         st.session_state["_api_client"] = client
     return client
 

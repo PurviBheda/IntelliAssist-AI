@@ -1,6 +1,14 @@
-# IntelliAssist AI - Streamlit Frontend Dependencies
-# Minimal dependencies required to run the Streamlit Community Cloud frontend
+# IntelliAssist AI - Streamlit Community Cloud Dependencies
+# Runtime requirements for single-process Streamlit deployment (Direct Mode)
 
 streamlit>=1.35.0
+pymupdf>=1.23.0
+python-docx>=1.1.0
+sentence-transformers>=3.0.0
+numpy>=1.26.0
+faiss-cpu>=1.8.0
+google-genai>=2.0.0
+scikit-learn>=1.4.0
+langchain>=0.3.0
+langchain-core>=0.3.0
 requests>=2.31.0
-
