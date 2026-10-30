@@ -15,6 +15,11 @@ Step 2: Start the Frontend (Choose React or Streamlit)
 Option A: React 19 Frontend (Vite)
 Open a second PowerShell terminal and run:
 
+Option B: Streamlit
+cd "D:\IntelliAssist AI\backend"
+.\.venv\Scripts\Activate.ps1
+python run_streamlit.py
+
 powershell
 cd "d:\IntelliAssist AI\frontend"
 npm run dev
@@ -39,4 +44,4 @@ Get-Process -Id (Get-NetTCPConnection -LocalPort 8443).OwningProcess -ErrorActio
 Get-Process -Id (Get-NetTCPConnection -LocalPort 8501).OwningProcess -ErrorAction SilentlyContinue | Stop-Process -Force
 # Stop any processes using port 8000 (Backend)
 Get-Process -Id (Get-NetTCPConnection -LocalPort 8000).OwningProcess -ErrorAction SilentlyContinue | Stop-Process -Force
-Then re-run python server.py and your preferred frontend.
+Then re-run python server.py and your preferred frontend.
